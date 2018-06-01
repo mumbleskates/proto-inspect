@@ -16,7 +16,7 @@ License: MIT
 
 def uint_to_signed(n):
     """Convert a non-negative integer to the signed value with zig-zag decoding."""
-    return (n >> 1) ^ (-1 if n & 1 else 0)
+    return (n >> 1) ^ (0 - (n & 1))
 
 
 def signed_to_uint(n):
