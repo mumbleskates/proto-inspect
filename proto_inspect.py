@@ -386,10 +386,10 @@ class ProtoValue(object):
         raise NotImplementedError
 
     def total_excess_bytes(self):
-        raise NotImplementedError
+        return 0
 
     def strip_excess_bytes(self):
-        raise NotImplementedError
+        pass
 
     def iter_serialize(self):
         raise NotImplementedError
@@ -707,12 +707,6 @@ class Fixed32(ProtoValue):
     def byte_size(self):
         return 4
 
-    def total_excess_bytes(self):
-        return 0
-
-    def strip_excess_bytes(self):
-        pass
-
     def iter_serialize(self):
         yield self.value
 
@@ -761,12 +755,6 @@ class Fixed64(ProtoValue):
     def byte_size(self):
         return 8
 
-    def total_excess_bytes(self):
-        return 0
-
-    def strip_excess_bytes(self):
-        pass
-
     def iter_serialize(self):
         yield self.value
 
@@ -800,6 +788,38 @@ class Fixed64(ProtoValue):
         self.value = pack('<q', value)
 
 
+class GroupStart(ProtoValue):
+    __slots__ = ()
+    wire_type = 3
+    default_value = None
+
+    @classmethod
+    def parse(cls, data, offset=0):
+        return cls(), 0
+
+    def byte_size(self):
+        return 0
+
+    def iter_serialize(self):
+        yield b''
+
+
+class GroupEnd(ProtoValue):
+    __slots__ = ()
+    wire_type = 4
+    default_value = None
+
+    @classmethod
+    def parse(cls, data, offset=0):
+        return cls(), 0
+
+    def byte_size(self):
+        return 0
+
+    def iter_serialize(self):
+        yield b''
+
+
 VALUE_TYPES = {
     klass.wire_type: klass
     for klass in [
@@ -807,5 +827,7 @@ VALUE_TYPES = {
         Blob,
         Fixed32,
         Fixed64,
+        GroupStart,
+        GroupEnd,
     ]
 }
