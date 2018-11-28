@@ -6,10 +6,10 @@ from struct import pack, unpack
 
 """
 Pure python tools for inspecting unknown protobuf data. Written for py3.6+.
-
 Todo: Does not support the (not well publicly documented) group syntax, which isn't
 really in use outside of Google.
 
+Author: Kent Ross
 License: MIT
 """
 
@@ -52,7 +52,8 @@ def read_varint(data, offset=0):
     Read a varint from the given offset in the given byte data.
 
     Returns a tuple containing the numeric value of the varint and
-    the number of bytes consumed.  (typically will be 0).
+    the number of bytes consumed.
+
     If the varint representation does not end before the end of the data,
     a ValueError is raised.
     """
