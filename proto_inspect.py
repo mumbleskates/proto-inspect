@@ -6,21 +6,26 @@ from struct import pack, unpack
 
 """
 Pure python tools for inspecting unknown protobuf data. Written for py3.6+.
-Todo: Does not support the (not well publicly documented) group syntax, which isn't
-really in use outside of Google.
 
 Author: Kent Ross
 License: MIT
 """
 
 
+NoneType = type(None)
+
+
 def uint_to_signed(n):
-    """Convert a non-negative integer to the signed value with zig-zag decoding."""
+    """
+    Convert a non-negative integer to the signed value with zig-zag decoding.
+    """
     return (n >> 1) ^ (0 - (n & 1))
 
 
 def signed_to_uint(n):
-    """Convert a signed integer to the non-negative value with zig-zag encoding."""
+    """
+    Convert a signed integer to the non-negative value with zig-zag encoding.
+    """
     if n < 0:
         return ((n ^ -1) << 1) | 1
     else:
@@ -72,14 +77,20 @@ def read_varint(data, offset=0):
 
 
 def bytes_to_encode_varint(n):
-    """Return the minimum number of bytes needed to represent a number in varint encoding."""
+    """
+    Return the minimum number of bytes needed to represent a number in varint
+    encoding.
+    """
     if n < 0:
         raise ValueError('Encoded varint must be positive')
     return max(1, (n.bit_length() + 6) // 7)
 
 
 def bytes_to_encode_tag(tag_id):
-    """Return the minimum number of bytes needed to represent a tag with a given id."""
+    """
+    Return the minimum number of bytes needed to represent a tag with a given
+    id.
+    """
     return (tag_id.bit_length() + 9) // 7
 
 
@@ -87,7 +98,9 @@ class ProtoMessage(object):
     __slots__ = ('fields',)
 
     def __init__(self, fields=()):
-        """Create a new ProtoMessage with the given iterable of protobuf Fields."""
+        """
+        Create a new ProtoMessage with the given iterable of protobuf Fields.
+        """
         self.fields = list(fields)
 
     def __eq__(self, other):
@@ -112,7 +125,8 @@ class ProtoMessage(object):
             fields_to_add = [Field(field_id, value) for value in values]
         new_fields = []
         for field in self.fields:
-            # Replace the existing fields with this id at the position it's first encountered
+            # Replace the existing fields with this id at the position it's
+            # first encountered
             if field.id == field_id:
                 new_fields.extend(fields_to_add)
                 fields_to_add = ()
@@ -139,23 +153,37 @@ class ProtoMessage(object):
         return cls(get_fields())
 
     def byte_size(self):
-        """Return the total length this message will occupy when serialized in bytes."""
+        """
+        Return the total length this message will occupy when serialized in
+        bytes.
+        """
         return sum(field.byte_size() for field in self.fields)
 
     def defaults_byte_size(self):
-        """Return the total number of bytes used to serialize fields that are assigned default values."""
-        return sum(field.byte_size() for field in self.fields if field.is_default())
+        """
+        Return the total number of bytes used to serialize fields that are
+        assigned default values.
+        """
+        return sum(
+            field.byte_size()
+            for field in self.fields
+            if field.is_default()
+        )
 
     def strip_defaults(self):
         """
         Strip all fields from the message that are assigned default values.
 
-        Note: This will also strip submessages, even though empty submessages may be represented intentionally.
+        Note: This will also strip submessages, even though empty submessages
+        may be represented intentionally.
         """
         self.fields = [field for field in self.fields if not field.is_default()]
 
     def total_excess_bytes(self):
-        """Return the total number of excess bytes used to encode varints (tags, varint values, and lengths)."""
+        """
+        Return the total number of excess bytes used to encode varints (tags,
+        varint values, and lengths).
+        """
         return sum(field.total_excess_bytes() for field in self.fields)
 
     def strip_excess_bytes(self):
@@ -194,15 +222,23 @@ class ProtoMessage(object):
                         current_type = type(values_to_pack[field.id][0])
                         if type(field.value) is not current_type:
                             raise ValueError(
-                                f'Fields with id {field.id} have heterogenous types and cannot be packed '
-                                f'together: found {current_type.__name__} and {type(field.value).__name__}'
+                                f'Fields with id {field.id} have heterogenous '
+                                f'types and cannot be packed together: found '
+                                f'{current_type.__name__} and '
+                                f'{type(field.value).__name__}'
                             )
                         values_to_pack[field.id].append(field.value)
             for field in self.fields:
                 if field.id in ids_to_pack:
                     if field.id in values_to_pack:
-                        # Only the first time we encounter an original field, emit the packed field
-                        yield Field(field.id, Blob(b''.join(build_packed(values_to_pack.pop(field.id)))))
+                        # Only the first time we encounter an original field,
+                        # emit the packed field
+                        yield Field(
+                            field.id,
+                            Blob(b''.join(
+                                build_packed(values_to_pack.pop(field.id))
+                            ))
+                        )
                 else:
                     yield field
 
@@ -218,8 +254,8 @@ class ProtoMessage(object):
                             f'Field id {field.id} exists with non-Blob '
                             f'type {type(field.value).__name__}, cannot unpack'
                         )
-                    for unpacked_value in unpack_klass.parse_repeated(field.value.value):
-                        yield Field(field.id, unpacked_value)
+                    for val in unpack_klass.parse_repeated(field.value.value):
+                        yield Field(field.id, val)
                 else:
                     yield field  # yield original field unchanged
 
@@ -227,8 +263,8 @@ class ProtoMessage(object):
 
     def as_map_item(
         self,
-        key_klass=None, key_interpretation='value',
-        value_klass=None, value_interpretation='value',
+        key_klass=NoneType, key_interpretation='value',
+        value_klass=NoneType, value_interpretation='value',
         fail_on_extra_fields=False,
     ):
         key_fields = self[1]
@@ -236,12 +272,17 @@ class ProtoMessage(object):
             raise ValueError('Map item has multiple fields with map "key" id 1')
         value_fields = self[2]
         if len(value_fields) > 1:
-            raise ValueError('Map item has multiple fields with map "value" id 2')
-        if fail_on_extra_fields and len(self.fields) > len(key_fields) + len(value_fields):
+            raise ValueError(
+                'Map item has multiple fields with map "value" id 2'
+            )
+        if (
+            fail_on_extra_fields
+            and len(self.fields) > len(key_fields) + len(value_fields)
+        ):
             raise ValueError('Map item has extra fields')
-        key = key_fields[0] if key_fields else (key_klass() if key_klass else None)
-        value = value_fields[0] if value_fields else (value_klass() if value_klass else None)
-        if key_klass is None:
+        key = key_fields[0] if key_fields else key_klass()
+        value = value_fields[0] if value_fields else value_klass()
+        if key_klass is NoneType:
             map_key = key
         else:
             if not isinstance(key, key_klass):
@@ -253,21 +294,24 @@ class ProtoMessage(object):
                 map_key = getattr(key, key_interpretation)
             except AttributeError:
                 raise TypeError(
-                    f'Invalid interpretation {repr(key_interpretation)} for key klass {key_klass.__name__}'
+                    f'Invalid interpretation {repr(key_interpretation)} for '
+                    f'key klass {key_klass.__name__}'
                 )
-        if value_klass is None:
+        if value_klass is NoneType:
             map_value = value
         else:
             if not isinstance(value, value_klass):
                 raise ValueError(
                     f'Map value is of the wrong type: '
-                    f'got {type(value).__name__}, expected {value_klass.__name__}'
+                    f'got {type(value).__name__}, expected '
+                    f'{value_klass.__name__}'
                 )
             try:
                 map_value = getattr(value, value_interpretation)
             except AttributeError:
                 raise TypeError(
-                    f'Invalid interpretation {repr(value_interpretation)} for value klass {value_klass.__name__}'
+                    f'Invalid interpretation {repr(value_interpretation)} for '
+                    f'value klass {value_klass.__name__}'
                 )
         return map_key, map_value
 
@@ -313,7 +357,8 @@ class Field(object):
         wire_type = tag & 7
         value_klass = VALUE_TYPES.get(wire_type)
         if not value_klass:
-            raise ValueError(f'Invalid or unsupported field wire type {wire_type} in tag at position {offset}')
+            raise ValueError(f'Invalid or unsupported field wire type '
+                             f'{wire_type} in tag at position {offset}')
         value, value_bytes = value_klass.parse(data, offset + tag_bytes)
         return cls(id_, value, excess_tag_bytes), tag_bytes + value_bytes
 
@@ -328,10 +373,17 @@ class Field(object):
         self.value.strip_excess_bytes()
 
     def byte_size(self):
-        return bytes_to_encode_tag(self.id) + self.excess_tag_bytes + self.value.byte_size()
+        return (
+            bytes_to_encode_tag(self.id) +
+            self.excess_tag_bytes +
+            self.value.byte_size()
+        )
 
     def iter_serialize(self):
-        yield write_varint((self.id << 3) | self.value.wire_type, self.excess_tag_bytes)
+        yield write_varint(
+            (self.id << 3) | self.value.wire_type,
+            self.excess_tag_bytes
+        )
         yield from self.value.iter_serialize()
 
     def serialize(self):
@@ -350,7 +402,10 @@ class ProtoValue(object):
     def __repr__(self):
         excess_bytes = getattr(self, 'excess_bytes', None)
         if excess_bytes:
-            return f'{type(self).__name__}({repr(self.value)}, excess_bytes={excess_bytes})'
+            return (
+                f'{type(self).__name__}({repr(self.value)}, '
+                f'excess_bytes={excess_bytes})'
+            )
         else:
             return f'{type(self).__name__}({repr(self.value)})'
 
@@ -544,7 +599,8 @@ class Blob(ProtoValue):
         start = offset + length_bytes
         value = data[start:start + length]
         if len(value) < length:
-            raise ValueError(f'Data truncated in length-delimited data beginning at position {start}')
+            raise ValueError(f'Data truncated in length-delimited data '
+                             f'beginning at position {start}')
         return cls(value, excess_bytes), length_bytes + length
 
     @classmethod
@@ -595,7 +651,8 @@ class Blob(ProtoValue):
                 for value in value_klass.parse_repeated(self.value)
             ]
         except AttributeError:
-            raise TypeError(f'Invalid interpretation {repr(interpretation)} for value klass {value_klass.__name__}')
+            raise TypeError(f'Invalid interpretation {repr(interpretation)} '
+                            f'for value klass {value_klass.__name__}')
 
     def set_as_repeated(self, values, value_klass=None, interpretation='value'):
         def emitter():
@@ -606,7 +663,8 @@ class Blob(ProtoValue):
                 value_writer = value_klass()
                 if not hasattr(value_writer, interpretation):
                     raise TypeError(
-                        f'Invalid interpretation {repr(interpretation)} for value klass {value_klass.__name__}'
+                        f'Invalid interpretation {repr(interpretation)} for '
+                        f'value klass {value_klass.__name__}'
                     )
                 for value in values:
                     setattr(value_writer, interpretation, value)
@@ -614,28 +672,36 @@ class Blob(ProtoValue):
 
         self.value = b''.join(emitter())
 
-    def get_as_repeated_with_excess_bytes(self, value_klass, interpretation='value'):
+    def get_as_repeated_with_excess_bytes(
+            self,
+            value_klass,
+            interpretation='value'
+    ):
         try:
             return [
                 (getattr(value, interpretation), value.total_excess_bytes())
                 for value in value_klass.parse_repeated(self.value)
             ]
         except AttributeError:
-            raise TypeError(
-                f'Invalid interpretation {repr(interpretation)} for value klass {value_klass.__name__}'
-            )
+            raise TypeError(f'Invalid interpretation {repr(interpretation)} '
+                            f'for value klass {value_klass.__name__}')
 
-    def set_as_repeated_with_excess_bytes(self, values_with_excess_bytes, value_klass, interpretation):
+    def set_as_repeated_with_excess_bytes(
+            self,
+            values_with_excess_bytes,
+            value_klass,
+            interpretation
+    ):
         def emitter():
             value_writer = value_klass()
             if not hasattr(value_writer, interpretation):
                 raise TypeError(
-                    f'Invalid interpretation {repr(interpretation)} for value klass {value_klass.__name__}'
+                    f'Invalid interpretation {repr(interpretation)} for value '
+                    f'klass {value_klass.__name__}'
                 )
             if not hasattr(value_writer, 'excess_bytes'):
-                raise TypeError(
-                    f'Value klass {value_klass.__name__} cannot have excess bytes'
-                )
+                raise TypeError(f'Value klass {value_klass.__name__} cannot '
+                                f'have excess bytes')
             for (value, excess_bytes) in values_with_excess_bytes:
                 setattr(value_writer, interpretation, value)
                 value_writer.total_excess_bytes = excess_bytes
@@ -674,7 +740,8 @@ class Blob(ProtoValue):
                         setattr(key_writer, key_interpretation, key)
                     except AttributeError:
                         raise TypeError(
-                            f'Invalid interpretation {repr(key_interpretation)} '
+                            f'Invalid interpretation '
+                            f'{repr(key_interpretation)} '
                             f'for key klass {key_klass.__name__}'
                         )
                 if value_klass is None:
@@ -684,7 +751,8 @@ class Blob(ProtoValue):
                         setattr(value_writer, value_interpretation, value)
                     except AttributeError:
                         raise TypeError(
-                            f'Invalid interpretation {repr(value_interpretation)} '
+                            f'Invalid interpretation '
+                            f'{repr(value_interpretation)} '
                             f'for value klass {value_klass.__name__}'
                         )
                 yield item_msg
@@ -701,7 +769,8 @@ class Fixed32(ProtoValue):
     def parse(cls, data, offset=0):
         value = data[offset:offset + 4]
         if len(value) < 4:
-            raise ValueError(f'Data truncated in fixed32 value beginning at position {offset}')
+            raise ValueError(f'Data truncated in fixed32 value beginning at '
+                             f'position {offset}')
         return cls(value), 4
 
     def byte_size(self):
@@ -749,7 +818,8 @@ class Fixed64(ProtoValue):
     def parse(cls, data, offset=0):
         value = data[offset:offset + 8]
         if len(value) < 8:
-            raise ValueError(f'Data truncated in fixed64 value beginning at position {offset}')
+            raise ValueError(f'Data truncated in fixed64 value beginning at '
+                             f'position {offset}')
         return cls(value), 8
 
     def byte_size(self):
