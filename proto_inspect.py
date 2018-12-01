@@ -20,6 +20,24 @@ where this library comes in: allowing you to deserialize, inspect, modify, and
 re-serialize proto values, fields, and messages at will with various partially-
 and non-supported variations.
 
+
+Parsing methods:
+
+Whole messages can be parsed via ProtoMessage.parse(), which attempts to consume
+the entire bytes-like object passed to it.
+
+The method parse_field(data, offset=0) parses a single field or group from the
+given data and offset, returning a 2-tuple of the resulting object and the
+number of bytes consumed.
+
+Field.parse(...) and Group.parse(...) are not useful for typical consumption;
+use parse_field() instead.
+
+Value type .parse(data, offset=0): Likewise to parse_field, returns a 2-tuple
+of the parsed value and the number of bytes consumed from the given data and
+offset.
+
+
 Every message, field, value, and group has some variation of the following APIs:
 
     * operators ==, hash()
@@ -54,6 +72,7 @@ Every message, field, value, and group has some variation of the following APIs:
     * iter_serialize()
         Returns constituent chunks of the serialization as a generator. Used
         internally by serialize().
+
 
 APIs unique to values (Varint, Blob, Fixed32, Fixed64):
 
@@ -102,9 +121,11 @@ APIs unique to values (Varint, Blob, Fixed32, Fixed64):
     standard maps (maps are implemented as repeated message types with key as
     field 1 and value as field 2).
 
+
 APIs unique to fields:
     * is_default()
         Returns a boolean value, true if this value is its proto3 default.
+
 
 APIs unique to messages and groups:
     * Access by index
