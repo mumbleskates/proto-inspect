@@ -1170,7 +1170,7 @@ class Fixed64(ProtoValue):
 class _TagOnlyValue(object):
     __slots__ = ()
     value = None
-    default_value = None
+    default_value = NotImplemented
 
     def __repr__(self):
         return f'{type(self).__name__}()'
