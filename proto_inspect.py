@@ -129,8 +129,10 @@ APIs unique to fields:
 
 APIs unique to messages and groups:
     * Access by index
-        Accessing by index yields a list of fields with that id in the order
-        they appear in the message (`msg[1]`)
+        Accessing by index yields the field or fields with that id in the order
+        they appear in the message (`msg[1]`). If there is only one, it is
+        returned without wrapping in a list for convenience. If you always
+        need a list, use the value_list(field_id) function instead.
 
     * Setting by index
         Likewise, iterables of values and groups can be assigned to existing or
@@ -271,6 +273,13 @@ class _FieldSet(object):
         )
 
     def __getitem__(self, field_id):
+        result = self.value_list(field_id)
+        if len(result) == 1:
+            return result[0]
+        else:
+            return result
+
+    def value_list(self, field_id):
         return [field.value for field in self.fields if field.id == field_id]
 
     def __setitem__(self, field_id, values):
@@ -451,13 +460,13 @@ class ProtoMessage(_FieldSet):
         self,
         key_klass=NoneType, key_interpretation='value',
         value_klass=NoneType, value_interpretation='value',
-        fail_on_extra_fields=False,
+        fail_on_extra_fields=True,
     ):
         key_fields = self[1]
-        if len(key_fields) > 1:
+        if isinstance(key_fields, list):
             raise ValueError('Map item has multiple fields with map "key" id 1')
         value_fields = self[2]
-        if len(value_fields) > 1:
+        if isinstance(value_fields, list):
             raise ValueError(
                 'Map item has multiple fields with map "value" id 2'
             )
@@ -466,8 +475,8 @@ class ProtoMessage(_FieldSet):
             and len(self.fields) > len(key_fields) + len(value_fields)
         ):
             raise ValueError('Map item has extra fields')
-        key = key_fields[0] if key_fields else key_klass()
-        value = value_fields[0] if value_fields else value_klass()
+        key = key_fields if key_fields else key_klass()
+        value = value_fields if value_fields else value_klass()
         if key_klass is NoneType:
             map_key = key
         else:
