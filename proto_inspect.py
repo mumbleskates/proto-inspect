@@ -1176,6 +1176,7 @@ class Fixed64(ProtoValue):
         self.value = pack('<q', value)
 
 
+# noinspection PyMethodMayBeStatic
 class _TagOnlyValue(object):
     __slots__ = ()
     value = None
@@ -1185,7 +1186,7 @@ class _TagOnlyValue(object):
         return f'{type(self).__name__}()'
 
     @classmethod
-    def parse(cls, data, offset=0):
+    def parse(cls, _data, _offset=0):
         return cls(), 0
 
     def byte_size(self):
