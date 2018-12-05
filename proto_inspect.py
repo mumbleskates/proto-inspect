@@ -258,7 +258,7 @@ def bytes_to_encode_tag(tag_id):
     return (tag_id.bit_length() + 9) // 7
 
 
-def _recursive_autoparse(fields):
+def _recursive_autoparse(fields, parse_empty):
     """
     Auto-parses a field into submessages recursively, returning the number
     of submessages successfully parsed.
@@ -266,8 +266,11 @@ def _recursive_autoparse(fields):
     num_parsed = 0
     for field in fields:
         try:
-            field.parse_submessage()
-            num_parsed += 1 + _recursive_autoparse(field.value.fields)
+            if field.parse_submessage(parse_empty):
+                num_parsed += 1 + _recursive_autoparse(
+                    field.value.fields,
+                    parse_empty
+                )
         except ValueError:
             pass
     return num_parsed
@@ -275,6 +278,12 @@ def _recursive_autoparse(fields):
 
 class _Serializable(object):
     __slots__ = ()
+
+    def _iter_pretty(self, indent, depth):
+        raise NotImplementedError
+
+    def pretty(self, indent=4):
+        return ''.join(self._iter_pretty(' ' * indent, 0))
 
     def byte_size(self):
         raise NotImplemented
@@ -316,6 +325,27 @@ class _FieldSet(_Serializable):
             f'{repr(self.fields)}'
             f')'
         )
+
+    def _iter_pretty(self, indent, depth):
+        if self.fields:
+            yield f'{type(self).__name__}('
+            yield from self._pretty_extra_pre()
+            yield '[\n'
+            for field in self.fields:
+                yield indent * (depth + 1)
+                yield from field._iter_pretty(indent, depth + 1)
+                yield ',\n'
+            yield f'{indent * depth}]'
+            yield from self._pretty_extra_post()
+            yield ')'
+        else:
+            yield repr(self)
+
+    def _pretty_extra_pre(self):
+        return ()
+
+    def _pretty_extra_post(self):
+        return ()
 
     def __getitem__(self, field_id):
         result = self.value_list(field_id)
@@ -387,7 +417,12 @@ class _FieldSet(_Serializable):
         """Order the fields in this message by id"""
         self.fields.sort(key=attrgetter('id'))
 
-    def parse_submessages(self, field_ids=(), auto=False):
+    def parse_submessages(
+        self,
+        field_ids=(),
+        auto=False,
+        auto_parse_empty=False
+    ):
         """
         Parse Blob values in the given field ids into messages and return the
         number of values parsed thus. If every parse is successful, replaces the
@@ -423,7 +458,10 @@ class _FieldSet(_Serializable):
                 else:
                     new_fields.append(field)
             elif auto:
-                if isinstance(field.value, Blob):
+                if (
+                        isinstance(field.value, Blob) and
+                        (len(field.value.value) > 0 or auto_parse_empty)
+                ):
                     try:
                         new_fields.append(Field(
                             field.id,
@@ -442,12 +480,12 @@ class _FieldSet(_Serializable):
         self.fields = new_fields
         return num_parsed
 
-    def autoparse_recursive(self):
+    def autoparse_recursive(self, parse_empty=False):
         """
         Recursively parse submessages whenever possible, returning the total
         number of submessages parsed thusly.
         """
-        return _recursive_autoparse(self.fields)
+        return _recursive_autoparse(self.fields, parse_empty)
 
     def unparse_submessages(self, field_ids=None):
         """
@@ -466,7 +504,7 @@ class _FieldSet(_Serializable):
                     new_fields.append(Field(
                         field.id,
                         Blob(
-                            field.value.serialize(),
+                            field.value.bytes,
                             excess_bytes=field.value.excess_bytes
                         ),
                         excess_tag_bytes=field.excess_tag_bytes
@@ -477,6 +515,7 @@ class _FieldSet(_Serializable):
             else:
                 new_fields.append(field)
 
+        self.fields = new_fields
         return num_unparsed
 
     def pack_repeated(self, field_ids_to_pack):
@@ -730,6 +769,13 @@ class Field(_Serializable):
                 f')'
             )
 
+    def _iter_pretty(self, indent, depth):
+        yield f'{type(self).__name__}({repr(self.id)}, '
+        yield from self.value._iter_pretty(indent, depth)
+        if self.excess_tag_bytes:
+            yield f', excess_tag_bytes={repr(self.excess_tag_bytes)}'
+        yield ')'
+
     @classmethod
     def parse(cls, field_id, wire_type, excess_tag_bytes, data, offset):
         value_klass = VALUE_TYPES.get(wire_type)
@@ -739,31 +785,35 @@ class Field(_Serializable):
         value, value_bytes = value_klass.parse(data, offset)
         return cls(field_id, value, excess_tag_bytes), value_bytes
 
-    def parse_submessage(self):
+    def parse_submessage(self, parse_empty=False):
         """
         Parse the value of this field as a submessage, change its value from a
         Blob to a SubMessage type. Does nothing if the field is already a
-        parsed submessage.
+        parsed submessage. Returns True if the value parsed successfully.
 
         Raises an error if the field is of the wrong type or does not parse
         cleanly.
         """
         if isinstance(self.value, Blob):
-            self.value = SubMessage(
-                self.value.message.fields,
-                self.value.excess_bytes
-            )
+            if len(self.value.value) > 0 or parse_empty:
+                self.value = SubMessage(
+                    self.value.message.fields,
+                    self.value.excess_bytes
+                )
+                return True
+            else:
+                return False  # not parsing empty value
         elif isinstance(self.value, SubMessage):
-            pass
+            return True  # already parsed
         else:
             raise ValueError('Cannot parse non-Blob field value')
 
-    def autoparse_recursive(self):
+    def autoparse_recursive(self, parse_empty=False):
         """
         Recursively parse submessages whenever possible, returning the total
         number of submessages parsed thusly.
         """
-        return _recursive_autoparse((self,))
+        return _recursive_autoparse((self,), parse_empty)
 
     def unparse_submessage(self):
         """
@@ -826,6 +876,15 @@ class Group(_FieldSet):
                 f'{repr(self.id)}, {repr(self.fields)}'
                 f')'
             )
+
+    def _pretty_extra_pre(self):
+        yield f'{repr(self.id)}, '
+
+    def _pretty_extra_post(self):
+        if self.excess_tag_bytes:
+            yield f', excess_tag_bytes={repr(self.excess_tag_bytes)}'
+        if self.excess_end_tag_bytes:
+            yield f', excess_end_tag_bytes={repr(self.excess_end_tag_bytes)}'
 
     @classmethod
     def parse(cls, _wire_type, field_id, excess_tag_bytes, data, offset):
@@ -923,6 +982,14 @@ class ProtoValue(_Serializable):
         else:
             self.value = value
 
+    def __eq__(self, other):
+        if type(other) is not type(self):
+            return NotImplemented
+        return other.value == self.value
+
+    def __hash__(self):
+        return hash((type(self), self.value))
+
     def __repr__(self):
         excess_bytes = getattr(self, 'excess_bytes', None)
         if excess_bytes:
@@ -933,13 +1000,8 @@ class ProtoValue(_Serializable):
         else:
             return f'{type(self).__name__}({repr(self.value)})'
 
-    def __eq__(self, other):
-        if type(other) is not type(self):
-            return NotImplemented
-        return other.value == self.value
-
-    def __hash__(self):
-        return hash((type(self), self.value))
+    def _iter_pretty(self, indent, depth):
+        yield repr(self)
 
     @classmethod
     def parse(cls, data, offset=0):
@@ -1287,6 +1349,10 @@ class SubMessage(ProtoMessage):
         super().__init__(fields)
         self.excess_bytes = excess_bytes
 
+    def _pretty_extra_post(self):
+        if self.excess_bytes:
+            yield f', excess_bytes={repr(self.excess_bytes)}',
+
     @property
     def default_value(self):
         return ProtoMessage()
@@ -1440,6 +1506,9 @@ class _TagOnlyValue(_Serializable):
 
     def __repr__(self):
         return f'{type(self).__name__}()'
+
+    def _iter_pretty(self, indent, depth):
+        yield repr(self)
 
     @classmethod
     def parse(cls, _data, _offset=0):
