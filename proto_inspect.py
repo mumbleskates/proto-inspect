@@ -117,7 +117,7 @@ APIs unique to values (Varint, Blob, Fixed32, Fixed64):
             value: plain bytes object
 
     Blobs also have methods for getting and setting as repeated values of
-    specified types and interpretations, and for translating to and from
+    specified types and interpretations, and for translating to and from packed
     standard maps (maps are implemented as repeated message types with key as
     field 1 and value as field 2).
 
@@ -126,6 +126,10 @@ APIs unique to fields:
     * is_default()
         Returns a boolean value, true if this value is its proto3 default.
 
+
+APIs common to fields, messages, and groups:
+    * autoparse_recursive()
+        Recursively parse Blob values if they look like valid messages.
 
 APIs unique to messages and groups:
     * Access by index
@@ -147,6 +151,10 @@ APIs unique to messages and groups:
         Performs the reverse operation of pack_repeated. The argument given is
         a dict mapping from field id to the type of value packed (Varint, Blob,
         etc.)
+    
+    * field_as_map(field_id, ...)
+        Convenience method that returns an iterable of the given field as if it
+        were a repeated map item.
 
     * defaults_byte_size()
         Returns the total byte size of serialized values that could be omitted
@@ -250,11 +258,48 @@ def bytes_to_encode_tag(tag_id):
     return (tag_id.bit_length() + 9) // 7
 
 
-class _FieldSet(object):
+def _recursive_autoparse(fields):
+    """
+    Auto-parses a field into submessages recursively, returning the number
+    of submessages successfully parsed.
+    """
+    num_parsed = 0
+    for field in fields:
+        try:
+            field.parse_submessage()
+            num_parsed += 1 + _recursive_autoparse(field.value.fields)
+        except ValueError:
+            pass
+    return num_parsed
+
+
+class _Serializable(object):
+    __slots__ = ()
+
+    def byte_size(self):
+        raise NotImplemented
+
+    def total_excess_bytes(self):
+        return 0
+
+    def strip_excess_bytes(self):
+        pass
+
+    def iter_serialize(self):
+        raise NotImplemented
+
+    def serialize(self):
+        return b''.join(self.iter_serialize())
+
+
+class _FieldSet(_Serializable):
     __slots__ = ('fields',)
 
     def __init__(self, fields):
-        self.fields = fields
+        if not isinstance(fields, Iterable):
+            raise TypeError(f'Cannot create fieldset with non-iterable type '
+                            f'{repr(type(fields).__name__)}')
+        self.fields = list(fields)
 
     def __eq__(self, other):
         """Calculate equality ignoring excess varint bytes."""
@@ -274,6 +319,8 @@ class _FieldSet(object):
 
     def __getitem__(self, field_id):
         result = self.value_list(field_id)
+        if not len(result):
+            raise KeyError(f'Field not found: {repr(field_id)}')
         if len(result) == 1:
             return result[0]
         else:
@@ -316,9 +363,121 @@ class _FieldSet(object):
     def __delitem__(self, field_id):
         self.fields = [field for field in self.fields if field.id != field_id]
 
+    def field_as_map(self, field_id, *args, **kwargs):
+        """
+        Return a generator of (key, value) pairs for the given unpacked repeated
+        map item field id in this message.
+
+        Extra arguments are the same as those for "as_map_item", applied to each
+        value in the given field id. All values under the specified field id
+        must be of type Blob, and will be parsed as messages.
+
+        Example: dict(m.field_as_map(5, Blob, 'text', Varint, 'signed'))
+        """
+        values = self.value_list(field_id)
+        if all(isinstance(val, (Blob, SubMessage)) for val in values):
+            return (
+                val.message.as_map_item(*args, **kwargs)
+                for val in self.value_list(field_id)
+            )
+        else:
+            raise ValueError('Non-Blob values found at the specified field id')
+
     def sort(self):
         """Order the fields in this message by id"""
         self.fields.sort(key=attrgetter('id'))
+
+    def parse_submessages(self, field_ids=(), auto=False):
+        """
+        Parse Blob values in the given field ids into messages and return the
+        number of values parsed thus. If every parse is successful, replaces the
+        fields with the parsed version.
+
+        If auto is set to True, blob values in field ids that are NOT specified
+        will also be converted to SubMessage type if and only if they appear to
+        be valid protobuf messages. In this case, field ids that ARE specified
+        are interpreted as required, and if any are not valid an error will
+        be raised.
+        """
+        if not isinstance(field_ids, Iterable):
+            field_ids = (field_ids,)
+        num_parsed = 0
+        new_fields = []
+        for field in self.fields:
+            if field.id in field_ids:
+                if not isinstance(field.value, (Blob, SubMessage)):
+                    raise ValueError(
+                        f'Encountered field at specified id {field.id} with '
+                        f'non-Blob type {type(field.value).__name__}'
+                    )
+                if isinstance(field.value, Blob):
+                    new_fields.append(Field(
+                        field.id,
+                        SubMessage(
+                            field.value.message,
+                            excess_bytes=field.value.excess_bytes
+                        ),
+                        excess_tag_bytes=field.excess_tag_bytes
+                    ))
+                    num_parsed += 1
+                else:
+                    new_fields.append(field)
+            elif auto:
+                if isinstance(field.value, Blob):
+                    try:
+                        new_fields.append(Field(
+                            field.id,
+                            SubMessage(
+                                field.value.message,
+                                excess_bytes=field.value.excess_bytes
+                            ),
+                            excess_tag_bytes=field.excess_tag_bytes
+                        ))
+                        num_parsed += 1
+                    except ValueError:
+                        new_fields.append(field)
+                else:
+                    new_fields.append(field)
+
+        self.fields = new_fields
+        return num_parsed
+
+    def autoparse_recursive(self):
+        """
+        Recursively parse submessages whenever possible, returning the total
+        number of submessages parsed thusly.
+        """
+        return _recursive_autoparse(self.fields)
+
+    def unparse_submessages(self, field_ids=None):
+        """
+        Replace SubMessage fields at the specified ids with their serialized
+        Blob values.
+
+        If field_ids is None, performs this action on all submessages.
+        """
+        if field_ids is not None and not isinstance(field_ids, Iterable):
+            field_ids = (field_ids,)
+        num_unparsed = 0
+        new_fields = []
+        for field in self.fields:
+            if isinstance(field.value, SubMessage):
+                if field_ids is None or field.id in field_ids:
+                    new_fields.append(Field(
+                        field.id,
+                        Blob(
+                            field.value.serialize(),
+                            excess_bytes=field.value.excess_bytes
+                        ),
+                        excess_tag_bytes=field.excess_tag_bytes
+                    ))
+                    num_unparsed += 1
+                else:
+                    new_fields.append(field)
+            else:
+                new_fields.append(field)
+
+        return num_unparsed
 
     def pack_repeated(self, field_ids_to_pack):
         if not isinstance(field_ids_to_pack, Iterable):
@@ -430,7 +589,7 @@ class ProtoMessage(_FieldSet):
         """
         Create a new ProtoMessage with the given iterable of protobuf Fields.
         """
-        super().__init__(list(fields))
+        super().__init__(fields)
 
     def __repr__(self):
         return f'{type(self).__name__}({repr(self.fields)})'
@@ -453,14 +612,16 @@ class ProtoMessage(_FieldSet):
 
         return cls(get_fields())
 
-    def serialize(self):
-        return b''.join(self.iter_serialize())
+    @property
+    def message(self):
+        return self
 
     def as_map_item(
         self,
         key_klass=NoneType, key_interpretation='value',
         value_klass=NoneType, value_interpretation='value',
         fail_on_extra_fields=True,
+        fail_on_submessage_type=False,
     ):
         key_fields = self[1]
         if isinstance(key_fields, list):
@@ -472,7 +633,7 @@ class ProtoMessage(_FieldSet):
             )
         if (
             fail_on_extra_fields
-            and len(self.fields) > len(key_fields) + len(value_fields)
+            and len(self.fields) > 2
         ):
             raise ValueError('Map item has extra fields')
         key = key_fields if key_fields else key_klass()
@@ -481,10 +642,14 @@ class ProtoMessage(_FieldSet):
             map_key = key
         else:
             if not isinstance(key, key_klass):
-                raise ValueError(
-                    f'Map key is of the wrong type: '
-                    f'got {type(key).__name__}, expected {key_klass.__name__}'
-                )
+                if key_klass is Blob and isinstance(key, SubMessage):
+                    if fail_on_submessage_type:
+                        raise ValueError('Blob expected but SubMessage found')
+                else:
+                    raise ValueError(
+                        f'Map key is of the wrong type: got '
+                        f'{type(key).__name__}, expected {key_klass.__name__}'
+                    )
             try:
                 map_key = getattr(key, key_interpretation)
             except AttributeError:
@@ -496,11 +661,15 @@ class ProtoMessage(_FieldSet):
             map_value = value
         else:
             if not isinstance(value, value_klass):
-                raise ValueError(
-                    f'Map value is of the wrong type: '
-                    f'got {type(value).__name__}, expected '
-                    f'{value_klass.__name__}'
-                )
+                if value_klass is Blob and isinstance(value, SubMessage):
+                    if fail_on_submessage_type:
+                        raise ValueError('Blob expected but SubMessage found')
+                else:
+                    raise ValueError(
+                        f'Map value is of the wrong type: got '
+                        f'{type(value).__name__}, expected '
+                        f'{value_klass.__name__}'
+                    )
             try:
                 map_value = getattr(value, value_interpretation)
             except AttributeError:
@@ -528,7 +697,7 @@ def parse_field(data, offset=0):
     return field, field_bytes + tag_bytes
 
 
-class Field(object):
+class Field(_Serializable):
     __slots__ = ('id', 'value', 'excess_tag_bytes',)
 
     def __init__(self, field_id, value, excess_tag_bytes=0):
@@ -570,6 +739,41 @@ class Field(object):
         value, value_bytes = value_klass.parse(data, offset)
         return cls(field_id, value, excess_tag_bytes), value_bytes
 
+    def parse_submessage(self):
+        """
+        Parse the value of this field as a submessage, change its value from a
+        Blob to a SubMessage type. Does nothing if the field is already a
+        parsed submessage.
+
+        Raises an error if the field is of the wrong type or does not parse
+        cleanly.
+        """
+        if isinstance(self.value, Blob):
+            self.value = SubMessage(
+                self.value.message.fields,
+                self.value.excess_bytes
+            )
+        elif isinstance(self.value, SubMessage):
+            pass
+        else:
+            raise ValueError('Cannot parse non-Blob field value')
+
+    def autoparse_recursive(self):
+        """
+        Recursively parse submessages whenever possible, returning the total
+        number of submessages parsed thusly.
+        """
+        return _recursive_autoparse((self,))
+
+    def unparse_submessage(self):
+        """
+        Convert this field from a parsed SubMessage to an opaque Blob.
+
+        Noop if this field is already a Blob type.
+        """
+        if isinstance(self.value, SubMessage):
+            self.value = Blob(self.value.serialize(), self.value.excess_bytes)
+
     def is_default(self):
         return self.value.value == self.value.default_value
 
@@ -594,9 +798,6 @@ class Field(object):
         )
         yield from self.value.iter_serialize()
 
-    def serialize(self):
-        return b''.join(self.iter_serialize())
-
 
 class Group(_FieldSet):
     __slots__ = ('id', 'excess_tag_bytes', 'excess_end_tag_bytes')
@@ -605,7 +806,7 @@ class Group(_FieldSet):
         self, group_id, fields=(),
         excess_tag_bytes=0, excess_end_tag_bytes=0
     ):
-        super().__init__(list(fields))
+        super().__init__(fields)
         self.id = group_id
         self.excess_tag_bytes = excess_tag_bytes
         self.excess_end_tag_bytes = excess_end_tag_bytes
@@ -664,6 +865,12 @@ class Group(_FieldSet):
             excess_end_tag_bytes
         ), total_bytes_read
 
+    def parse_submessage(self):
+        raise ValueError('Groups cannot be parsed')
+
+    def unparse_submessage(self):
+        raise ValueError('Groups cannot be unparsed')
+
     @property
     def value(self):
         """
@@ -707,12 +914,12 @@ class Group(_FieldSet):
         )
 
 
-class ProtoValue(object):
+class ProtoValue(_Serializable):
     __slots__ = ('value',)
 
     def __init__(self, value=None):
         if value is None:
-            self.value = self.default_value
+            self.value = self.default_value()
         else:
             self.value = value
 
@@ -753,21 +960,6 @@ class ProtoValue(object):
     @property
     def wire_type(self):
         raise NotImplementedError
-
-    def byte_size(self):
-        raise NotImplementedError
-
-    def total_excess_bytes(self):
-        return 0
-
-    def strip_excess_bytes(self):
-        pass
-
-    def iter_serialize(self):
-        raise NotImplementedError
-
-    def serialize(self):
-        return b''.join(self.iter_serialize())
 
 
 class Varint(ProtoValue):
@@ -955,6 +1147,14 @@ class Blob(ProtoValue):
         self.value = value.encode('utf-8')
 
     @property
+    def bytes(self):
+        return self.value
+
+    @bytes.setter
+    def bytes(self, value):
+        self.value = value
+
+    @property
     def message(self):
         return ProtoMessage.parse(self.value)
 
@@ -1078,6 +1278,62 @@ class Blob(ProtoValue):
         self.set_as_repeated(build_result(), Blob, 'message')
 
 
+class SubMessage(ProtoMessage):
+    """Represents a Blob field interpreted as a valid sub-message."""
+    __slots__ = ('excess_bytes',)
+    wire_type = 2
+
+    def __init__(self, fields=(), excess_bytes=0):
+        super().__init__(fields)
+        self.excess_bytes = excess_bytes
+
+    @property
+    def default_value(self):
+        return ProtoMessage()
+
+    @classmethod
+    def parse(cls, data, offset=0):
+        length, length_bytes = read_varint(data, offset)
+        excess_bytes = length_bytes - bytes_to_encode_varint(length)
+        start = offset + length_bytes
+        value = ProtoMessage.parse(data[start:start + length])
+        return cls(value.fields, excess_bytes), length_bytes + length
+
+    def byte_size(self):
+        length = super().byte_size()
+        return bytes_to_encode_varint(length) + self.excess_bytes + length
+
+    def total_excess_bytes(self):
+        return self.excess_bytes + super().total_excess_bytes()
+
+    def strip_excess_bytes(self):
+        self.excess_bytes = 0
+
+    def iter_serialize(self):
+        yield write_varint(super().byte_size(), self.excess_bytes)
+        yield from super().iter_serialize()
+
+    @property
+    def bytes(self):
+        return b''.join(super().iter_serialize())
+
+    @bytes.setter
+    def bytes(self, value):
+        self.fields = ProtoMessage.parse(value).fields
+
+    @property
+    def message(self):
+        return self
+
+    @message.setter
+    def message(self, value):
+        self.fields = list(value.fields)
+
+    @property
+    def text(self):
+        return self.bytes.decode('utf-8')
+
+
 class Fixed32(ProtoValue):
     __slots__ = ()
     wire_type = 5
@@ -1177,7 +1433,7 @@ class Fixed64(ProtoValue):
 
 
 # noinspection PyMethodMayBeStatic
-class _TagOnlyValue(object):
+class _TagOnlyValue(_Serializable):
     __slots__ = ()
     value = None
     default_value = NotImplemented
@@ -1192,17 +1448,8 @@ class _TagOnlyValue(object):
     def byte_size(self):
         return 0
 
-    def total_excess_bytes(self):
-        return 0
-
-    def strip_excess_bytes(self):
-        pass
-
     def iter_serialize(self):
         return ()  # nothing
-
-    def serialize(self):
-        return b''
 
 
 class GroupStart(_TagOnlyValue):
