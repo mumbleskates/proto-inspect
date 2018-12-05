@@ -319,6 +319,9 @@ class _FieldSet(_Serializable):
     def __hash__(self):
         return hash((type(self), self.fields))
 
+    def __iter__(self):
+        return iter(self.fields)
+
     def __repr__(self):
         return (
             f'{type(self).__name__}('
@@ -331,7 +334,7 @@ class _FieldSet(_Serializable):
             yield f'{type(self).__name__}('
             yield from self._pretty_extra_pre()
             yield '[\n'
-            for field in self.fields:
+            for field in self:
                 yield indent * (depth + 1)
                 yield from field._iter_pretty(indent, depth + 1)
                 yield ',\n'
@@ -357,7 +360,7 @@ class _FieldSet(_Serializable):
             return result
 
     def value_list(self, field_id):
-        return [field.value for field in self.fields if field.id == field_id]
+        return [field.value for field in self if field.id == field_id]
 
     def __setitem__(self, field_id, values):
         def to_field(value):
@@ -377,7 +380,7 @@ class _FieldSet(_Serializable):
         else:
             fields_to_add = [to_field(value) for value in values]
         new_fields = []
-        for field in self.fields:
+        for field in self:
             # Replace the existing fields with this id at the position it's
             # first encountered
             if field.id == field_id:
@@ -391,7 +394,7 @@ class _FieldSet(_Serializable):
         self.fields = new_fields
 
     def __delitem__(self, field_id):
-        self.fields = [field for field in self.fields if field.id != field_id]
+        self.fields = [field for field in self if field.id != field_id]
 
     def field_as_map(self, field_id, *args, **kwargs):
         """
@@ -438,7 +441,7 @@ class _FieldSet(_Serializable):
             field_ids = (field_ids,)
         num_parsed = 0
         new_fields = []
-        for field in self.fields:
+        for field in self:
             if field.id in field_ids:
                 if not isinstance(field.value, (Blob, SubMessage)):
                     raise ValueError(
@@ -498,7 +501,7 @@ class _FieldSet(_Serializable):
             field_ids = (field_ids,)
         num_unparsed = 0
         new_fields = []
-        for field in self.fields:
+        for field in self:
             if isinstance(field.value, SubMessage):
                 if field_ids is None or field.id in field_ids:
                     new_fields.append(Field(
@@ -530,7 +533,7 @@ class _FieldSet(_Serializable):
                     yield from value.iter_serialize()
 
             values_to_pack = {}
-            for field in self.fields:
+            for field in self:
                 if field.id in ids_to_pack:
                     if field.id not in values_to_pack:
                         values_to_pack[field.id] = [field.value]
@@ -544,7 +547,7 @@ class _FieldSet(_Serializable):
                                 f'{type(field.value).__name__}'
                             )
                         values_to_pack[field.id].append(field.value)
-            for field in self.fields:
+            for field in self:
                 if field.id in ids_to_pack:
                     if field.id in values_to_pack:
                         # Only the first time we encounter an original field,
@@ -562,7 +565,7 @@ class _FieldSet(_Serializable):
 
     def unpack_repeated(self, fields_with_value_klass_dict):
         def new_fields():
-            for field in self.fields:
+            for field in self:
                 unpack_klass = fields_with_value_klass_dict.get(field.id)
                 if unpack_klass:
                     if type(field.value) is not Blob:
@@ -582,7 +585,7 @@ class _FieldSet(_Serializable):
         Return the total length this message will occupy when serialized in
         bytes.
         """
-        return sum(field.byte_size() for field in self.fields)
+        return sum(field.byte_size() for field in self)
 
     def defaults_byte_size(self):
         """
@@ -591,33 +594,36 @@ class _FieldSet(_Serializable):
         """
         return sum(
             field.byte_size()
-            for field in self.fields
+            for field in self
             if field.is_default()
         )
 
     def strip_defaults(self):
         """
-        Strip all fields from the message that are assigned default values.
+        Strip all fields from the message that are assigned default values,
+        returning the number of fields so removed.
 
         Note: This will also strip submessages, even though empty submessages
         may be represented intentionally.
         """
-        self.fields = [field for field in self.fields if not field.is_default()]
+        old_len = len(self.fields)
+        self.fields = [field for field in self if not field.is_default()]
+        return old_len - len(self.fields)
 
     def total_excess_bytes(self):
         """
         Return the total number of excess bytes used to encode varints (tags,
         varint values, and lengths).
         """
-        return sum(field.total_excess_bytes() for field in self.fields)
+        return sum(field.total_excess_bytes() for field in self)
 
     def strip_excess_bytes(self):
         """Strip all excess bytes from this message's fields and values."""
-        for field in self.fields:
+        for field in self:
             field.strip_excess_bytes()
 
     def iter_serialize(self):
-        for field in self.fields:
+        for field in self:
             yield from field.iter_serialize()
 
 
@@ -1393,7 +1399,7 @@ class SubMessage(ProtoMessage):
 
     @message.setter
     def message(self, value):
-        self.fields = list(value.fields)
+        self.fields = list(value)
 
     @property
     def text(self):
