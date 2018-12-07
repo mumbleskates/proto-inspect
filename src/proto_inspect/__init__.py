@@ -1,5 +1,5 @@
 # coding=utf-8
-from collections import Mapping, Iterable
+from collections.abc import Mapping, Iterable
 from operator import attrgetter
 from struct import pack, unpack
 
