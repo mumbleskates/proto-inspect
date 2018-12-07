@@ -151,7 +151,7 @@ APIs unique to messages and groups:
         Performs the reverse operation of pack_repeated. The argument given is
         a dict mapping from field id to the type of value packed (Varint, Blob,
         etc.)
-    
+
     * field_as_map(field_id, ...)
         Convenience method that returns an iterable of the given field as if it
         were a repeated map item.
@@ -286,7 +286,7 @@ class _Serializable(object):
         return ''.join(self._iter_pretty(' ' * indent, 0))
 
     def byte_size(self):
-        raise NotImplemented
+        raise NotImplementedError
 
     def total_excess_bytes(self):
         return 0
@@ -295,7 +295,7 @@ class _Serializable(object):
         pass
 
     def iter_serialize(self):
-        raise NotImplemented
+        raise NotImplementedError
 
     def serialize(self):
         return b''.join(self.iter_serialize())

@@ -1,0 +1,9 @@
+image: python:3.7
+
+before_script:
+  - pip install -e .[test]
+
+test:
+  script:
+    - flake8 src test
+    - pytest
