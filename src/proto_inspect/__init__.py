@@ -127,7 +127,7 @@ APIs unique to fields:
     * parse_packed_repeated()
         TODO: document
     
-    * unparse()
+    * unparsed()
         TODO: document
 
 
@@ -474,12 +474,18 @@ class _FieldSet(_Serializable):
         """
         if field_ids is not None and not isinstance(field_ids, Iterable):
             field_ids = (field_ids,)
+        new_fields = []
         num_unparsed = 0
         for field in self:
             if field_ids is None or field.id in field_ids:
-                field.unparse()
-                num_unparsed += 1
+                unparsed = field.unparsed()
+                if unparsed is not field:
+                    new_fields.append(unparsed)
+                    num_unparsed += 1
+            else:
+                new_fields.append(field)
 
+        self.fields = new_fields
         return num_unparsed
 
     def byte_size(self):
@@ -712,18 +718,22 @@ class Field(_Serializable):
         """
         return _recursive_autoparse((self,), parse_empty)
 
-    def unparse(self):
+    def unparsed(self):
         """
-        Convert this field from a parsed SubMessage or PackedRepeated to an
-        opaque Blob.
+        Return a new field with the same value as this field, converted from a
+        parsed SubMessage or PackedRepeated to an opaque Blob.
 
-        Noop if this field is already a Blob type.
+        Returns this object if this field already has a Blob type.
         """
         # TODO: document up top
         if type(self.value) is Blob:
-            return
+            return self
         elif self.value.wire_type == Blob.wire_type:
-            self.value = Blob(self.value.bytes, self.value.excess_bytes)
+            return Field(
+                self.id,
+                Blob(self.value.bytes, self.value.excess_bytes),
+                excess_tag_bytes=self.excess_tag_bytes
+            )
         else:
             raise TypeError(
                 f'Cannot unparse a value of type {type(self.value).__name__}'
