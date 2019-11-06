@@ -564,7 +564,14 @@ class ProtoMessage(_FieldSet):
             limit=float('inf'),
             allow_orphan_group_ends=False
     ):
-        """Parse a complete ProtoMessage from a bytes-like object."""
+        """
+        Parse a complete ProtoMessage from a bytes-like object.
+
+        Starts parsing from the given offset and consumes until the end of the
+        data or the given limit (another greater or equal offset) is reached,
+        whichever comes first. Fails if the end of the message does not fit
+        exactly to the end of the data (or the limit).
+        """
 
         def get_fields():
             current_offset = offset
@@ -905,6 +912,14 @@ class _ParseableValue:
 
     @classmethod
     def parse_repeated(cls, data, offset=0, limit=float('inf')):
+        """
+        Parses a repeated proto value from a bytes-like object.
+
+        Starts parsing from the given offset and consumes until the end of the
+        data or the given limit (another greater or equal offset) is reached,
+        whichever comes first. Fails if the end of the message does not fit
+        exactly to the end of the data (or the limit).
+        """
         current_offset = offset
         while current_offset < len(data) and current_offset < limit:
             value, value_bytes = cls.parse(data, current_offset)
