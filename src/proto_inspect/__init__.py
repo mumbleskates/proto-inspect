@@ -829,14 +829,14 @@ class Group(_FieldSet):
         except ValueError as ex:
             # Append info about this group context to parsing errors
             raise ValueError(
-                ex.args[0] + f' in group with id {field_id}'
-                             f' which began at position {offset}'
+                f'{ex.args[0]} in group with id {field_id} '
+                f'which began at position {offset}'
             )
         return cls(
             field_id,
             fields,
-            excess_tag_bytes,
-            excess_end_tag_bytes
+            excess_tag_bytes=excess_tag_bytes,
+            excess_end_tag_bytes=excess_end_tag_bytes
         ), total_bytes_read
 
     def parse_submessage(self):
@@ -855,7 +855,7 @@ class Group(_FieldSet):
         return self
 
     def is_default(self):
-        return len(self.fields) == 0
+        return not self.fields
 
     def byte_size(self):
         return (
