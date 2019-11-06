@@ -112,7 +112,7 @@ APIs unique to values (Varint, Blob, Fixed32, Fixed64):
             value: 8-character bytes object
 
         Blob:
-            bytes (plain bytes object), text (utf-8),
+            bytes (plain bytes object), string (utf-8),
             message (nested protobuf message)
             value: plain bytes object
 
@@ -1109,11 +1109,11 @@ class Blob(ProtoValue):
         yield self.value
 
     @property
-    def text(self):
+    def string(self):
         return self.value.decode('utf-8')
 
-    @text.setter
-    def text(self, value):
+    @string.setter
+    def string(self, value):
         self.value = value.encode('utf-8')
 
     @property
@@ -1337,7 +1337,7 @@ class SubMessage(ProtoMessage, _ParseableValue):
         self.fields = list(value)
 
     @property
-    def text(self):
+    def string(self):
         return self.bytes.decode('utf-8')
 
 
