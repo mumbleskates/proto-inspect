@@ -822,7 +822,10 @@ class Group(_FieldSet):
                     yield field
             else:
                 # Reached the end of the data without closing the group
-                raise ValueError('Message truncated')
+                raise ValueError(
+                    f'Missing group end tag while parsing group '
+                    f'with id {field_id} which began at position {offset}'
+                )
 
         try:
             fields = list(get_fields(offset))
