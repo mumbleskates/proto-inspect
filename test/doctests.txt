@@ -1,0 +1,104 @@
+>>> from proto_inspect import *
+
+Create a basic message
+
+>>> m = ProtoMessage()
+>>> m
+ProtoMessage([])
+
+Add a field
+
+>>> m.fields.append(Field(5, Varint(55), excess_tag_bytes=1))
+>>> m
+ProtoMessage([Field(5, Varint(55), excess_tag_bytes=1)])
+
+Pretty printing works
+
+>>> print(m.pretty())
+ProtoMessage([
+    Field(5, Varint(55), excess_tag_bytes=1),
+])
+
+Accessing by index works
+
+>>> m[5]
+Varint(55)
+>>> m[5].value
+55
+>>> m[5].signed
+-28
+
+Serializing the message works
+
+>>> m.serialize().hex()
+'a80037'
+
+Parsing the message back works, too
+
+>>> def objects_are_same(a, b):
+...     assert a == b, 'equality'
+...     assert a.serialize() == b.serialize(), 'serialized equality'
+...     assert repr(a) == repr(b), 'repr equality'
+...     assert a.pretty() == b.pretty(), 'pretty equality'
+...     return True
+...
+>>> reparsed = ProtoMessage.parse(m.serialize())
+>>> objects_are_same(m, reparsed)
+True
+
+Add some extra garbage bytes
+
+>>> m[5].excess_bytes = 2
+>>> m.total_excess_bytes()
+3
+>>> print(m.pretty())
+ProtoMessage([
+    Field(5, Varint(55, excess_bytes=2), excess_tag_bytes=1),
+])
+>>> m.serialize().hex()
+'a800b78000'
+
+When comparing values, equality ignores excess bytes...
+
+>>> m == reparsed
+True
+
+But the representation isn't the same:
+
+>>> objects_are_same(m, reparsed)
+Traceback (most recent call last):
+    ...
+AssertionError: serialized equality
+
+This is because equality (==) compares only the (known) represented values of
+the proto, not the serialized output. In this way, if excess bytes are (for some
+terrible reason) an actual concern, you should make sure that all represented
+values are parsed and unpacked (for example, nested submessages and packed
+repeated fields), otherwise equality testing on two messages that will parse
+as equivalent in a typical implementation may falsely tell that they are not.
+
+Both the pretty print and the repr are valid code that exactly reproduce the
+object.
+
+>>> def validate_printing(obj):
+...     r = repr(obj)
+...     pretty = obj.pretty()
+...     objects_are_same(obj, eval(r))
+...     objects_are_same(obj, eval(pretty))
+...     return True
+...
+>>> validate_printing(m)
+True
+
+Strip all the garbage bytes off the message
+
+>>> m.strip_excess_bytes()
+>>> print(m.pretty())
+ProtoMessage([
+    Field(5, Varint(55)),
+])
+>>> m.serialize().hex()
+'2837'
+>>> validate_printing(m)
+True
+>>>

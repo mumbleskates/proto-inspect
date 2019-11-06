@@ -5,7 +5,7 @@ setup(
     name='proto-inspect',
     description='protobuf parsing, modification, '
                 'and reassembly for the repl',
-    version='0.1',
+    version='0.2',
     author='Kent Ross',
     author_email='k@mad.cash',
     url='',
