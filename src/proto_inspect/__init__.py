@@ -395,7 +395,7 @@ class _FieldSet(_Serializable):
         """Order the fields in this message by id"""
         self.fields.sort(key=attrgetter('id'))
 
-    def parse_submessages(
+    def parse_multi_submessages(
             self,
             field_ids=(),
             auto=False,
