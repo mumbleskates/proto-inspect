@@ -463,6 +463,10 @@ class _FieldSet(_Serializable):
         Recursively parse submessages whenever possible, returning the total
         number of submessages parsed thusly.
         """
+        # These calls mutate as they go rather than building a speculative list
+        # of altered fields (like unparse_fields does) because if we are only
+        # trying to parse anything that *can* be parsed and there is no failure
+        # mode.
         return _recursive_autoparse(self.fields, parse_empty)
 
     def unparse_fields(self, field_ids=None):
