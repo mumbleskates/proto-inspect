@@ -528,6 +528,11 @@ class _FieldSet(_Serializable):
         for field in self:
             yield from field.iter_serialize()
 
+    # TODO: implement and document map accessors (maybe as a view?); delegate to
+    #  PackedRepeated if that's what's found
+    # TODO: implement a fast mode where 'fields' is a dict instead for more
+    #  efficient access; allow converting to and from that representation
+
 
 class ProtoMessage(_FieldSet):
     __slots__ = ()
