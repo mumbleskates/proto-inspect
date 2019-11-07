@@ -966,7 +966,7 @@ class _ParseableValue:
 
 
 # noinspection PyAbstractClass
-class ProtoValue(_Serializable, _ParseableValue):
+class _ProtoValue(_Serializable, _ParseableValue):
     __slots__ = ('value',)
 
     def __init__(self, value=None):
@@ -1014,7 +1014,7 @@ class ProtoValue(_Serializable, _ParseableValue):
     'sint32',
     'sint64',
 )
-class Varint(ProtoValue):
+class Varint(_ProtoValue):
     __slots__ = ('excess_bytes',)
     wire_type = 0
     default_value = 0
@@ -1147,11 +1147,142 @@ class Varint(ProtoValue):
 
 
 @_register_value_types(
+    'fixed4bytes',
+    'float4',
+    'fixed32',
+    'sfixed32',
+)
+class Fixed4Bytes(_ProtoValue):
+    __slots__ = ()
+    wire_type = 5
+    default_value = b'\0' * 4
+
+    @classmethod
+    def parse(cls, data, offset=0):
+        value = data[offset:offset + 4]
+        if len(value) < 4:
+            raise ValueError(f'Data truncated in Fixed4Bytes value '
+                             f'beginning at position {offset}')
+        return cls(value), 4
+
+    def byte_size(self):
+        return 4
+
+    def iter_serialize(self):
+        yield self.value
+
+    @property
+    def fixed4bytes(self):
+        return self.value
+
+    @fixed4bytes.setter
+    def fixed4bytes(self, value):
+        if len(value) != 4:
+            raise ValueError('Fixed4Bytes value must have length 4')
+        self.value = value
+
+    @property
+    def float4(self):
+        result, = unpack('<f', self.value)
+        return result
+
+    @float4.setter
+    def float4(self, value):
+        self.value = pack('<f', value)
+
+    single = float4
+
+    @property
+    def fixed32(self):
+        result, = unpack('<L', self.value)
+        return result
+
+    @fixed32.setter
+    def fixed32(self, value):
+        self.value = pack('<L', value)
+
+    @property
+    def sfixed32(self):
+        result, = unpack('<l', self.value)
+        return result
+
+    @sfixed32.setter
+    def sfixed32(self, value):
+        self.value = pack('<l', value)
+
+
+@_register_value_types(
+    'fixed8bytes',
+    'float8',
+    'double',
+    'fixed64',
+    'sfixed64',
+)
+class Fixed8Bytes(_ProtoValue):
+    __slots__ = ()
+    wire_type = 1
+    default_value = b'\0' * 8
+
+    @classmethod
+    def parse(cls, data, offset=0):
+        value = data[offset:offset + 8]
+        if len(value) < 8:
+            raise ValueError(f'Data truncated in Fixed8Bytes value '
+                             f'beginning at position {offset}')
+        return cls(value), 8
+
+    def byte_size(self):
+        return 8
+
+    def iter_serialize(self):
+        yield self.value
+
+    @property
+    def fixed8bytes(self):
+        return self.value
+
+    @fixed8bytes.setter
+    def fixed8bytes(self, value):
+        if len(value) != 8:
+            raise ValueError('Fixed4Bytes value must have length 8')
+        self.value = value
+
+    @property
+    def float8(self):
+        result, = unpack('<d', self.value)
+        return result
+
+    @float8.setter
+    def float8(self, value):
+        self.value = pack('<d', value)
+
+    double = float8
+
+    @property
+    def fixed64(self):
+        result, = unpack('<Q', self.value)
+        return result
+
+    @fixed64.setter
+    def fixed64(self, value):
+        self.value = pack('<Q', value)
+
+    @property
+    def sfixed64(self):
+        result, = unpack('<q', self.value)
+        return result
+
+    @sfixed64.setter
+    def sfixed64(self, value):
+        self.value = pack('<q', value)
+
+
+@_register_value_types(
     'blob',
     'string',
     'bytes',
 )
-class Blob(ProtoValue):
+class Blob(_ProtoValue):
     __slots__ = ('excess_bytes',)
     wire_type = 2
     default_value = b''
@@ -1437,137 +1568,6 @@ class SubMessage(ProtoMessage, _ParseableValue):
         return self.bytes.decode('utf-8')
 
 
-@_register_value_types(
-    'fixed4bytes',
-    'float4',
-    'fixed32',
-    'sfixed32',
-)
-class Fixed4Bytes(ProtoValue):
-    __slots__ = ()
-    wire_type = 5
-    default_value = b'\0' * 4
-
-    @classmethod
-    def parse(cls, data, offset=0):
-        value = data[offset:offset + 4]
-        if len(value) < 4:
-            raise ValueError(f'Data truncated in Fixed4Bytes value '
-                             f'beginning at position {offset}')
-        return cls(value), 4
-
-    def byte_size(self):
-        return 4
-
-    def iter_serialize(self):
-        yield self.value
-
-    @property
-    def fixed4bytes(self):
-        return self.value
-
-    @fixed4bytes.setter
-    def fixed4bytes(self, value):
-        if len(value) != 4:
-            raise ValueError('Fixed4Bytes value must have length 4')
-        self.value = value
-
-    @property
-    def float4(self):
-        result, = unpack('<f', self.value)
-        return result
-
-    @float4.setter
-    def float4(self, value):
-        self.value = pack('<f', value)
-
-    single = float4
-
-    @property
-    def fixed32(self):
-        result, = unpack('<L', self.value)
-        return result
-
-    @fixed32.setter
-    def fixed32(self, value):
-        self.value = pack('<L', value)
-
-    @property
-    def sfixed32(self):
-        result, = unpack('<l', self.value)
-        return result
-
-    @sfixed32.setter
-    def sfixed32(self, value):
-        self.value = pack('<l', value)
-
-
-@_register_value_types(
-    'fixed8bytes',
-    'float8',
-    'double',
-    'fixed64',
-    'sfixed64',
-)
-class Fixed8Bytes(ProtoValue):
-    __slots__ = ()
-    wire_type = 1
-    default_value = b'\0' * 8
-
-    @classmethod
-    def parse(cls, data, offset=0):
-        value = data[offset:offset + 8]
-        if len(value) < 8:
-            raise ValueError(f'Data truncated in Fixed8Bytes value '
-                             f'beginning at position {offset}')
-        return cls(value), 8
-
-    def byte_size(self):
-        return 8
-
-    def iter_serialize(self):
-        yield self.value
-
-    @property
-    def fixed8bytes(self):
-        return self.value
-
-    @fixed8bytes.setter
-    def fixed8bytes(self, value):
-        if len(value) != 8:
-            raise ValueError('Fixed4Bytes value must have length 8')
-        self.value = value
-
-    @property
-    def float8(self):
-        result, = unpack('<d', self.value)
-        return result
-
-    @float8.setter
-    def float8(self, value):
-        self.value = pack('<d', value)
-
-    double = float8
-
-    @property
-    def fixed64(self):
-        result, = unpack('<Q', self.value)
-        return result
-
-    @fixed64.setter
-    def fixed64(self, value):
-        self.value = pack('<Q', value)
-
-    @property
-    def sfixed64(self):
-        result, = unpack('<q', self.value)
-        return result
-
-    @sfixed64.setter
-    def sfixed64(self, value):
-        self.value = pack('<q', value)
-
-
 # noinspection PyMethodMayBeStatic
 class _TagOnlyValue(_Serializable):
     __slots__ = ()
@@ -1625,11 +1625,13 @@ FIELD_TYPES = {
     GroupStart.wire_type: Group
 }
 
+# These are all the types that will appear in repr strings. We don't need to
+# include any other utility functions, but it's important that the user can
+# import * and not get repr values that can't eval back to an equivalent object.
 __all__ = (
     'ProtoMessage',
     'Field',
     'Group',
-    'ProtoValue',
     'Varint',
     'Blob',
     'Fixed4Bytes',
