@@ -20,7 +20,7 @@ setup(
         'License :: OSI Approved :: MIT License',
     ],
 
-    packages=[
+    py_modules=[
         'proto_inspect',
     ],
 
