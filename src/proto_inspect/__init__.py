@@ -1624,3 +1624,18 @@ WIRE_TYPE_KLASSES = {
 FIELD_TYPES = {
     GroupStart.wire_type: Group
 }
+
+__all__ = (
+    'ProtoMessage',
+    'Field',
+    'Group',
+    'ProtoValue',
+    'Varint',
+    'Blob',
+    'Fixed4Bytes',
+    'Fixed8Bytes',
+    'PackedRepeated',
+    'SubMessage',
+    'GroupStart',
+    'GroupEnd',
+)
