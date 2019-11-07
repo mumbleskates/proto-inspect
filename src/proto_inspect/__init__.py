@@ -120,13 +120,13 @@ APIs unique to values (Varint, Blob, Fixed32, Fixed64):
 APIs unique to fields:
     * is_default()
         Returns a boolean value, true if this value is its proto3 default.
-        
+
     * parse_submessage()
         TODO: document
-        
+
     * parse_packed_repeated()
         TODO: document
-    
+
     * unparsed()
         TODO: document
 
