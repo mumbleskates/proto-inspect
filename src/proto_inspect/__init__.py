@@ -80,7 +80,7 @@ Every message, field, value, and group has some variation of the following APIs:
         internally by serialize().
 
 
-APIs unique to values (Varint, Blob, Fixed32, Fixed64):
+APIs unique to values (Varint, Blob, Fixed4Bytes, Fixed8Bytes):
 
     * excess_bytes
         If a value contains a varint, it will have this attribute. It can be set
@@ -105,16 +105,16 @@ APIs unique to values (Varint, Blob, Fixed32, Fixed64):
         representation:
 
         Varint:
-            unsigned, signed, boolean,
+            unsigned, signed, bool,
             uint32, int32, sint32,
             uint64, int64, sint64
             value: un-translated int value
 
-        Fixed32:
+        Fixed4Bytes:
             float4 (alias single), fixed32, sfixed32
             value: 4-character bytes object
 
-        Fixed64:
+        Fixed8Bytes:
             float8 (alias double), fixed64, sfixed64
             value: 8-character bytes object
 
@@ -175,6 +175,28 @@ APIs unique to messages and groups:
 """
 
 NoneType = type(None)
+
+UNSIGNED_64_BIT_RANGE = range(0x1_0000_0000_0000_0000)
+SIGNED_64_BIT_RANGE = range(-0x8000_0000_0000_0000, 0x8000_0000_0000_0000)
+UNSIGNED_32_BIT_RANGE = range(0x1_0000_0000)
+SIGNED_32_BIT_RANGE = range(-0x8000_0000, 0x8000_0000)
+
+
+# ProtoValue klasses by name of proto type (e.g., int64, string, double etc.)
+VALUE_TYPE_KLASSES = {}
+
+
+def _register_value_types(*types):
+    global VALUE_TYPE_KLASSES
+
+    def dec(klass):
+        for type_name in types:
+            # ensure the klass has an accessor for that name
+            assert hasattr(klass, type_name), f'{klass} missing {type_name}'
+            VALUE_TYPE_KLASSES[type_name] = klass
+        return klass
+
+    return dec
 
 
 def uint_to_signed(n):
@@ -614,9 +636,9 @@ def parse_field(data, offset=0):
     except ValueError as ex:
         raise ValueError(f'{ex.args[0]} while parsing field tag')
     field_id = tag >> 3
-    wire_type = tag & 7
+    wire_type = tag & 0b111
     excess_tag_bytes = tag_bytes - bytes_to_encode_tag(field_id)
-    value_klass = VALUE_TYPES.get(wire_type)
+    value_klass = WIRE_TYPE_KLASSES.get(wire_type)
     if not value_klass:
         raise ValueError(f'Invalid or unsupported field wire type '
                          f'{wire_type} in tag at position {offset}')
@@ -667,7 +689,7 @@ class Field(_Serializable):
 
     @classmethod
     def parse(cls, field_id, wire_type, excess_tag_bytes, data, offset):
-        value_klass = VALUE_TYPES.get(wire_type)
+        value_klass = WIRE_TYPE_KLASSES.get(wire_type)
         if not value_klass:
             raise ValueError(f'Invalid or unsupported field wire type '
                              f'{wire_type} in tag at position {offset}')
@@ -980,6 +1002,18 @@ class ProtoValue(_Serializable, _ParseableValue):
         raise NotImplementedError
 
 
+@_register_value_types(
+    'varint',
+    'unsigned',
+    'signed',
+    'bool',
+    'int32',
+    'int64',
+    'uint32',
+    'uint64',
+    'sint32',
+    'sint64',
+)
 class Varint(ProtoValue):
     __slots__ = ('excess_bytes',)
     wire_type = 0
@@ -1008,12 +1042,14 @@ class Varint(ProtoValue):
         yield write_varint(self.value, self.excess_bytes)
 
     @property
-    def unsigned(self):
+    def varint(self):
         return self.value
 
-    @unsigned.setter
-    def unsigned(self, value):
+    @varint.setter
+    def varint(self, value):
         self.value = value
+
+    unsigned = varint
 
     @property
     def signed(self):
@@ -1024,28 +1060,28 @@ class Varint(ProtoValue):
         self.value = signed_to_uint(value)
 
     @property
-    def boolean(self):
+    def bool(self):
         return bool(self.value)
 
-    @boolean.setter
-    def boolean(self, value):
+    @bool.setter
+    def bool(self, value):
         self.value = int(bool(value))
 
     @property
     def uint32(self):
-        if self.value not in range(0x1_0000_0000):
+        if self.value not in UNSIGNED_32_BIT_RANGE:
             raise ValueError('Varint out of range for uint32')
         return self.value
 
     @uint32.setter
     def uint32(self, value):
-        if value not in range(0x1_0000_0000):
+        if value not in UNSIGNED_32_BIT_RANGE:
             raise ValueError('Value out of range for uint32')
         self.value = value
 
     @property
     def int32(self):
-        if self.value not in range(0x1_0000_0000):
+        if self.value not in UNSIGNED_32_BIT_RANGE:
             raise ValueError('Varint out of range for int32')
         if self.value & 0x8000_0000:
             return self.value - 0x1_0000_0000
@@ -1054,37 +1090,37 @@ class Varint(ProtoValue):
 
     @int32.setter
     def int32(self, value):
-        if value not in range(-0x8000_0000, 0x8000_0000):
+        if value not in SIGNED_32_BIT_RANGE:
             raise ValueError('Value out of range for int32')
         self.value = value & 0xffff_ffff
 
     @property
     def sint32(self):
-        if self.value not in range(0x1_0000_0000):
+        if self.value not in UNSIGNED_32_BIT_RANGE:
             raise ValueError('Varint out of range for sint32')
         return uint_to_signed(self.value)
 
     @sint32.setter
     def sint32(self, value):
-        if value not in range(-0x8000_0000, 0x8000_0000):
+        if value not in SIGNED_32_BIT_RANGE:
             raise ValueError('Value out of range for sint32')
         self.value = signed_to_uint(value)
 
     @property
     def uint64(self):
-        if self.value not in range(0x1_0000_0000_0000_0000):
+        if self.value not in UNSIGNED_64_BIT_RANGE:
             raise ValueError('Varint out of range for uint64')
         return self.value
 
     @uint64.setter
     def uint64(self, value):
-        if value not in range(0x1_0000_0000_0000_0000):
+        if value not in UNSIGNED_64_BIT_RANGE:
             raise ValueError('Value out of range for uint64')
         self.value = value
 
     @property
     def int64(self):
-        if self.value not in range(0x1_0000_0000_0000_0000):
+        if self.value not in UNSIGNED_64_BIT_RANGE:
             raise ValueError('Varint out of range for int64')
         if self.value & 0x8000_0000_0000_0000:
             return self.value - 0x1_0000_0000_0000_0000
@@ -1093,23 +1129,28 @@ class Varint(ProtoValue):
 
     @int64.setter
     def int64(self, value):
-        if value not in range(-0x8000_0000_0000_0000, 0x8000_0000_0000_0000):
+        if value not in SIGNED_64_BIT_RANGE:
             raise ValueError('Value out of range for int64')
         self.value = value & 0xffff_ffff_ffff_ffff
 
     @property
     def sint64(self):
-        if self.value not in range(0x1_0000_0000_0000_0000):
+        if self.value not in UNSIGNED_64_BIT_RANGE:
             raise ValueError('Varint out of range for sint64')
         return uint_to_signed(self.value)
 
     @sint64.setter
     def sint64(self, value):
-        if value not in range(-0x8000_0000_0000_0000, 0x8000_0000_0000_0000):
+        if value not in SIGNED_64_BIT_RANGE:
             raise ValueError('Value out of range for sint64')
         self.value = signed_to_uint(value)
 
 
+@_register_value_types(
+    'blob',
+    'string',
+    'bytes',
+)
 class Blob(ProtoValue):
     __slots__ = ('excess_bytes',)
     wire_type = 2
@@ -1151,12 +1192,12 @@ class Blob(ProtoValue):
         yield self.value
 
     @property
-    def string(self):
-        return self.value.decode('utf-8')
+    def blob(self):
+        return self.value
 
-    @string.setter
-    def string(self, value):
-        self.value = value.encode('utf-8')
+    @blob.setter
+    def blob(self, value):
+        self.value = value
 
     @property
     def bytes(self):
@@ -1165,6 +1206,14 @@ class Blob(ProtoValue):
     @bytes.setter
     def bytes(self, value):
         self.value = value
+
+    @property
+    def string(self):
+        return self.value.decode('utf-8')
+
+    @string.setter
+    def string(self, value):
+        self.value = value.encode('utf-8')
 
     @property
     def message(self):
@@ -1182,16 +1231,10 @@ class PackedRepeated(_Serializable):
     __slots__ = ('values', 'excess_bytes',)
     wire_type = Blob.wire_type
 
-    def __init__(self, values=(), excess_bytes=0):
-        self.values = list(values)
+    def __init__(self, values=(), value_type=None, excess_bytes=0):
+        self.values = None  # suppress 'set outside __init__' warning
+        self.set_as(values, value_type=value_type)
         self.excess_bytes = excess_bytes
-        wire_types = set(value.wire_type for value in self.values)
-        if len(wire_types) > 1:
-            type_names = sorted(VALUE_TYPES[t].__name__ for t in wire_types)
-            raise ValueError(
-                f'Values in a PackedRepeated cannot have heterogenous wire'
-                f' types: found {{{", ".join(type_names)}}}'
-            )
 
     @property
     def default_value(self):
@@ -1291,26 +1334,37 @@ class PackedRepeated(_Serializable):
 
         return list(emitter())
 
-    def set_as(self, values, value_klass=None, interpretation='value'):
+    def set_as(self, values, value_type=None):
+        """
+        Set the repeated values of this field.
+
+        The provided value_type should be the format that the values are in.
+        For example, say values is a list of ints: if value_type is "varint" or
+        "unsigned" they will be wrapped in Varint as raw values, but if
+        value_type is "float4" they will be converted to single-precision
+        floating point values and wrapped in Fixed4Bytes values.
+
+        If value_type is not provided, the values will be used as-is.
+        """
         def ingester():
-            if value_klass is None:
-                for value in values:
-                    yield from value.iter_serialize()
+            if value_type is None:
+                yield from values
             else:
+                try:
+                    value_klass = VALUE_TYPE_KLASSES[value_type]
+                except KeyError:
+                    raise ValueError(f'Unknown value type {repr(value_type)}')
                 for value in values:
                     proto_value = value_klass()
-                    try:
-                        setattr(proto_value, interpretation, value)
-                    except AttributeError:
-                        raise TypeError(
-                            f'Invalid interpretation {repr(interpretation)} '
-                            f'for value klass {value_klass.__name__}'
-                        )
+                    setattr(proto_value, value_type, value)
                     yield proto_value
 
         self.values = list(ingester())
 
 
+@_register_value_types(
+    'message',
+)
 class SubMessage(ProtoMessage, _ParseableValue):
     """Represents a Blob field interpreted as a valid sub-message."""
     __slots__ = ('excess_bytes',)
@@ -1383,7 +1437,13 @@ class SubMessage(ProtoMessage, _ParseableValue):
         return self.bytes.decode('utf-8')
 
 
-class Fixed32(ProtoValue):
+@_register_value_types(
+    'fixed4bytes',
+    'float4',
+    'fixed32',
+    'sfixed32',
+)
+class Fixed4Bytes(ProtoValue):
     __slots__ = ()
     wire_type = 5
     default_value = b'\0' * 4
@@ -1392,8 +1452,8 @@ class Fixed32(ProtoValue):
     def parse(cls, data, offset=0):
         value = data[offset:offset + 4]
         if len(value) < 4:
-            raise ValueError(f'Data truncated in fixed32 value beginning at '
-                             f'position {offset}')
+            raise ValueError(f'Data truncated in Fixed4Bytes value '
+                             f'beginning at position {offset}')
         return cls(value), 4
 
     def byte_size(self):
@@ -1401,6 +1461,16 @@ class Fixed32(ProtoValue):
 
     def iter_serialize(self):
         yield self.value
+
+    @property
+    def fixed4bytes(self):
+        return self.value
+
+    @fixed4bytes.setter
+    def fixed4bytes(self, value):
+        if len(value) != 4:
+            raise ValueError('Fixed4Bytes value must have length 4')
+        self.value = value
 
     @property
     def float4(self):
@@ -1432,7 +1502,14 @@ class Fixed32(ProtoValue):
         self.value = pack('<l', value)
 
 
-class Fixed64(ProtoValue):
+@_register_value_types(
+    'fixed8bytes',
+    'float8',
+    'double',
+    'fixed64',
+    'sfixed64',
+)
+class Fixed8Bytes(ProtoValue):
     __slots__ = ()
     wire_type = 1
     default_value = b'\0' * 8
@@ -1441,8 +1518,8 @@ class Fixed64(ProtoValue):
     def parse(cls, data, offset=0):
         value = data[offset:offset + 8]
         if len(value) < 8:
-            raise ValueError(f'Data truncated in fixed64 value beginning at '
-                             f'position {offset}')
+            raise ValueError(f'Data truncated in Fixed8Bytes value '
+                             f'beginning at position {offset}')
         return cls(value), 8
 
     def byte_size(self):
@@ -1450,6 +1527,16 @@ class Fixed64(ProtoValue):
 
     def iter_serialize(self):
         yield self.value
+
+    @property
+    def fixed8bytes(self):
+        return self.value
+
+    @fixed8bytes.setter
+    def fixed8bytes(self, value):
+        if len(value) != 8:
+            raise ValueError('Fixed4Bytes value must have length 8')
+        self.value = value
 
     @property
     def float8(self):
@@ -1515,15 +1602,15 @@ class GroupEnd(_TagOnlyValue):
 
 
 # Mapping from wire type to value klass.
-VALUE_TYPES = {
+WIRE_TYPE_KLASSES = {
     klass.wire_type: klass
     for klass in [
         Varint,
-        Fixed64,
+        Fixed8Bytes,
         Blob,
         GroupStart,
         GroupEnd,
-        Fixed32,
+        Fixed4Bytes,
     ]
 }
 
