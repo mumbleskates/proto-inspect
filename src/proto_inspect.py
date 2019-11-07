@@ -181,7 +181,6 @@ SIGNED_64_BIT_RANGE = range(-0x8000_0000_0000_0000, 0x8000_0000_0000_0000)
 UNSIGNED_32_BIT_RANGE = range(0x1_0000_0000)
 SIGNED_32_BIT_RANGE = range(-0x8000_0000, 0x8000_0000)
 
-
 # ProtoValue klasses by name of proto type (e.g., int64, string, double etc.)
 VALUE_TYPE_KLASSES = {}
 
@@ -1477,6 +1476,7 @@ class PackedRepeated(_Serializable):
 
         If value_type is not provided, the values will be used as-is.
         """
+
         def ingester():
             if value_type is None:
                 yield from values
