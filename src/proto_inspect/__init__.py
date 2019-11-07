@@ -39,16 +39,23 @@ offset.
 
 Every message, field, value, and group has some variation of the following APIs:
 
+    * repr_pretty(), pretty_print()
+        Outputs the same valid code that reproduces the object like repr does,
+        but broken into multiple lines with hierarchical indents. The number of
+        spaces for the indentation is customizable with the indent argument.
+        repr_pretty() returns the pretty as a string, and pretty_print sends it
+        to print() for convenience.
+
     * operators ==, hash()
         Note: These objects are mutable, and hash() is not safe if you plan to
         change their values.
 
     * byte_size()
-        Returns the exact number of bytes when serialized, as an int.
+        Returns the exact number of bytes when serialized.
 
     * total_excess_bytes()
         Returns the number of bytes the message would be shortened by if all
-        extraneous varint bytes are removed as an int.
+        extraneous varint bytes are removed.
 
         Most protobuf varints have multiple valid representations because they
         are little-endian and trailing zeros are still interpreted as valid.
@@ -274,8 +281,11 @@ class _Serializable:
     def iter_pretty(self, indent, depth):
         raise NotImplementedError
 
-    def pretty(self, indent=4):
+    def repr_pretty(self, indent=4):
         return ''.join(self.iter_pretty(' ' * indent, 0))
+
+    def pretty_print(self, *args, **kwargs):
+        print(self.repr_pretty(*args, **kwargs))
 
     def byte_size(self):
         raise NotImplementedError

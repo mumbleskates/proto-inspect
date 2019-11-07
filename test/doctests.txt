@@ -14,7 +14,7 @@ ProtoMessage([Field(5, Varint(55), excess_tag_bytes=1)])
 
 Pretty printing works
 
->>> print(m.pretty())
+>>> m.pretty_print()
 ProtoMessage([
     Field(5, Varint(55), excess_tag_bytes=1),
 ])
@@ -39,7 +39,7 @@ Parsing the message back works, too
 ...     assert a == b, 'equality'
 ...     assert a.serialize() == b.serialize(), 'serialized equality'
 ...     assert repr(a) == repr(b), 'repr equality'
-...     assert a.pretty() == b.pretty(), 'pretty equality'
+...     assert a.repr_pretty() == b.repr_pretty(), 'pretty equality'
 ...     return True
 ...
 >>> reparsed = ProtoMessage.parse(m.serialize())
@@ -51,7 +51,7 @@ Add some extra garbage bytes
 >>> m[5].excess_bytes = 2
 >>> m.total_excess_bytes()
 3
->>> print(m.pretty())
+>>> m.pretty_print()
 ProtoMessage([
     Field(5, Varint(55, excess_bytes=2), excess_tag_bytes=1),
 ])
@@ -82,7 +82,7 @@ object.
 
 >>> def validate_printing(obj):
 ...     r = repr(obj)
-...     pretty = obj.pretty()
+...     pretty = obj.repr_pretty()
 ...     objects_are_same(obj, eval(r))
 ...     objects_are_same(obj, eval(pretty))
 ...     return True
@@ -93,7 +93,7 @@ True
 Strip all the garbage bytes off the message
 
 >>> m.strip_excess_bytes()
->>> print(m.pretty())
+>>> m.pretty_print()
 ProtoMessage([
     Field(5, Varint(55)),
 ])
