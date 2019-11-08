@@ -327,6 +327,9 @@ class _Serializable:
 class _FieldSet(_Serializable):
     __slots__ = ('fields',)
 
+    # TODO: implement a fast mode where 'fields' is a dict instead for more
+    #  efficient access; allow converting to and from that representation
+
     def __init__(self, fields):
         if not isinstance(fields, Iterable):
             raise TypeError(f'Cannot create fieldset with non-iterable type '
@@ -426,6 +429,8 @@ class _FieldSet(_Serializable):
         """Order the fields in this message by id"""
         self.fields.sort(key=attrgetter('id'))
 
+    # TODO: parse_multi_packed_repeated
+
     def parse_multi_submessages(
             self,
             field_ids=(),
@@ -443,6 +448,7 @@ class _FieldSet(_Serializable):
         are interpreted as required, and if any are not valid an error will
         be raised.
         """
+        # TODO: document up top
         if not isinstance(field_ids, Iterable):
             field_ids = (field_ids,)
         num_parsed = 0
@@ -571,8 +577,6 @@ class _FieldSet(_Serializable):
 
     # TODO: implement and document map accessors (maybe as a view?); delegate to
     #  PackedRepeated if that's what's found
-    # TODO: implement a fast mode where 'fields' is a dict instead for more
-    #  efficient access; allow converting to and from that representation
 
 
 class ProtoMessage(_FieldSet):
