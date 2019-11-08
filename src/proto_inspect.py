@@ -1375,6 +1375,9 @@ class PackedRepeated(_Serializable):
             return NotImplemented
         return other.values == self.values
 
+    def __iter__(self):
+        yield from self.values
+
     def __repr__(self):
         if self.excess_bytes:
             return (
