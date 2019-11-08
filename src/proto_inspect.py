@@ -229,7 +229,7 @@ def write_varint(value, excess_bytes=0):
             yield 0x00
 
     if value < 0:
-        raise ValueError('Encoded varint must be positive')
+        raise ValueError('Encoded varint must be non-negative')
     elif value == 0:
         return b'\0'
     else:
@@ -266,7 +266,7 @@ def bytes_to_encode_varint(n):
     encoding.
     """
     if n < 0:
-        raise ValueError('Encoded varint must be positive')
+        raise ValueError('Encoded varint must be non-negative')
     return max(1, (n.bit_length() + 6) // 7)
 
 
