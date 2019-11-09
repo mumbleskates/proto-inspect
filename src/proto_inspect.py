@@ -646,9 +646,9 @@ def parse_field(data, offset=0):
         raise ValueError(f'Invalid or unsupported field wire type '
                          f'{wire_type} in tag at position {offset}')
     field, field_bytes = FIELD_TYPES.get(wire_type, Field).parse(
-        field_id, wire_type, excess_tag_bytes,
-        data,
-        offset + tag_bytes
+        field_id, wire_type,
+        data, offset=offset + tag_bytes,
+        excess_tag_bytes=excess_tag_bytes
     )
     return field, field_bytes + tag_bytes
 
@@ -691,13 +691,16 @@ class Field(_Serializable):
         yield ')'
 
     @classmethod
-    def parse(cls, field_id, wire_type, excess_tag_bytes, data, offset):
+    def parse(cls, field_id, wire_type, data, offset=0, excess_tag_bytes=0):
         value_klass = WIRE_TYPE_KLASSES.get(wire_type)
         if not value_klass:
             raise ValueError(f'Invalid or unsupported field wire type '
                              f'{wire_type} in tag at position {offset}')
-        value, value_bytes = value_klass.parse(data, offset)
-        return cls(field_id, value, excess_tag_bytes), value_bytes
+        value, value_bytes = value_klass.parse(data, offset=offset)
+        return (
+                cls(field_id, value, excess_tag_bytes=excess_tag_bytes),
+                value_bytes
+        )
 
     def parse_packed_repeated(self, repeated_value_type):
         """
@@ -720,7 +723,9 @@ class Field(_Serializable):
             data = self.value.bytes
             offset = 0
             while offset < len(data):
-                value, value_bytes = repeated_value_type.parse(data, offset)
+                value, value_bytes = repeated_value_type.parse(
+                    data, offset=offset
+                )
                 yield value
                 offset += value_bytes
 
@@ -848,7 +853,7 @@ class Group(_FieldSet):
             yield f', excess_end_tag_bytes={repr(self.excess_end_tag_bytes)}'
 
     @classmethod
-    def parse(cls, _wire_type, field_id, excess_tag_bytes, data, offset):
+    def parse(cls, _wire_type, field_id, data, offset=0, excess_tag_bytes=0):
         excess_end_tag_bytes = 0
         total_bytes_read = 0
 
@@ -957,7 +962,7 @@ class _ParseableValue:
         """
         current_offset = offset
         while current_offset < len(data) and current_offset < limit:
-            value, value_bytes = cls.parse(data, current_offset)
+            value, value_bytes = cls.parse(data, offset=current_offset)
             yield value
             current_offset += value_bytes
         if current_offset > limit:
@@ -969,7 +974,7 @@ class _ParseableValue:
 
 
 # noinspection PyAbstractClass
-class _ProtoValue(_Serializable, _ParseableValue):
+class _SingleValue(_Serializable, _ParseableValue):
     __slots__ = ('value',)
 
     def __init__(self, value=None):
@@ -1017,7 +1022,7 @@ class _ProtoValue(_Serializable, _ParseableValue):
     'sint32',
     'sint64',
 )
-class Varint(_ProtoValue):
+class Varint(_SingleValue):
     __slots__ = ('excess_bytes',)
     wire_type = 0
     default_value = 0
@@ -1155,7 +1160,7 @@ class Varint(_ProtoValue):
     'fixed32',
     'sfixed32',
 )
-class Fixed4Bytes(_ProtoValue):
+class Fixed4Bytes(_SingleValue):
     __slots__ = ()
     wire_type = 5
     default_value = b'\0' * 4
@@ -1221,7 +1226,7 @@ class Fixed4Bytes(_ProtoValue):
     'fixed64',
     'sfixed64',
 )
-class Fixed8Bytes(_ProtoValue):
+class Fixed8Bytes(_SingleValue):
     __slots__ = ()
     wire_type = 1
     default_value = b'\0' * 8
@@ -1285,7 +1290,7 @@ class Fixed8Bytes(_ProtoValue):
     'string',
     'bytes',
 )
-class Blob(_ProtoValue):
+class Blob(_SingleValue):
     __slots__ = ('excess_bytes',)
     wire_type = 2
     default_value = b''
