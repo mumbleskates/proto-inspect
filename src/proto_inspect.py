@@ -80,7 +80,11 @@ Every message, field, value, and group has some variation of the following APIs:
         internally by serialize().
 
 
-APIs unique to values (Varint, Blob, Fixed4Bytes, Fixed8Bytes):
+APIs unique to values (Varint, Blob, Fixed4Bytes, Fixed8Bytes, PackedRepeated,
+SubMessage, Group):
+
+    * is_default()
+        Returns a boolean value, true if this value is its proto3 default.
 
     * excess_bytes
         If a value contains a varint, it will have this attribute. It can be set
@@ -99,6 +103,10 @@ APIs unique to values (Varint, Blob, Fixed4Bytes, Fixed8Bytes):
         comes first. Used for reading the values from e.g. packed repeated
         fields, which are stored with variable-length (Blob) wire type and
         contain only the values concatenated together, omitting the tags.
+
+    * parse_submessage():
+        Returns the value in submessage form, or raises an error if the value
+        cannot be a submessage.
 
     Typed access properties:
         Provides get/set views of the values translated for the given
@@ -125,13 +133,7 @@ APIs unique to values (Varint, Blob, Fixed4Bytes, Fixed8Bytes):
 
 
 APIs unique to fields:
-    * is_default()
-        Returns a boolean value, true if this value is its proto3 default.
-
     * parse_submessage()
-        TODO: document
-
-    * parse_packed_repeated()
         TODO: document
 
     * unparsed()
@@ -215,7 +217,7 @@ def signed_to_uint(n):
         return n << 1
 
 
-def write_varint(value, excess_bytes=0):
+def write_varint(value, *, excess_bytes=0):
     """Converts an unsigned varint to bytes."""
 
     def varint_bytes(n):
@@ -236,7 +238,7 @@ def write_varint(value, excess_bytes=0):
         return bytes(varint_bytes(value))
 
 
-def read_varint(data, offset=0):
+def read_varint(data, *, offset=0):
     """
     Read a varint from the given offset in the given byte data.
 
@@ -286,11 +288,13 @@ def _recursive_autoparse(fields, parse_empty):
     num_parsed = 0
     for field in fields:
         try:
-            if field.parse_submessage(parse_empty):
+            submessage = field.value.parse_submessage()
+            if submessage is not field.value:
                 num_parsed += 1 + _recursive_autoparse(
-                    field.value.fields,
+                    submessage.fields,
                     parse_empty
                 )
+                field.value = submessage
         except (TypeError, ValueError):
             pass
     return num_parsed
@@ -320,8 +324,9 @@ class _Serializable:
     def iter_serialize(self):
         raise NotImplementedError
 
-    def serialize(self):
-        return b''.join(self.iter_serialize())
+    def serialize(self, **kwargs):
+        # noinspection PyArgumentList
+        return b''.join(self.iter_serialize(**kwargs))
 
 
 class _FieldSet(_Serializable):
@@ -352,17 +357,11 @@ class _FieldSet(_Serializable):
         yield from self.fields
 
     def __repr__(self):
-        return (
-            f'{type(self).__name__}('
-            f'{repr(self.fields)}'
-            f')'
-        )
+        return f'{type(self).__name__}({repr(self.fields)})'
 
     def iter_pretty(self, indent, depth):
         if self.fields:
-            yield f'{type(self).__name__}('
-            yield from self._pretty_extra_pre()
-            yield '[\n'
+            yield f'{type(self).__name__}([\n'
             for field in self:
                 yield indent * (depth + 1)
                 yield from field.iter_pretty(indent, depth + 1)
@@ -373,15 +372,55 @@ class _FieldSet(_Serializable):
         else:
             yield repr(self)
 
-    def _pretty_extra_pre(self):
-        return ()
-
     def _pretty_extra_post(self):
         return ()
 
+    @classmethod
+    def parse(
+            cls,
+            data,
+            *,
+            offset=0,
+            limit=float('inf'),
+            explicit_group_markers=False
+    ):
+        """
+        Parse a complete field set from a bytes-like object.
+
+        Starts parsing from the given offset and consumes until the end of the
+        data or the given limit (another greater or equal offset) is reached,
+        whichever comes first. Fails if the end of the fields does not fit
+        exactly to the end of the data (or the limit).
+        """
+
+        def get_fields():
+            current_offset = offset
+            while current_offset < len(data) and current_offset < limit:
+                field, bytes_read = Field.parse(
+                    data, offset=current_offset,
+                    explicit_group_markers=explicit_group_markers
+                )
+                if (
+                        isinstance(field.value, GroupEnd) and
+                        not explicit_group_markers
+                ):
+                    raise ValueError(f'Orphaned group end with id {field.id} '
+                                     f'at position {current_offset}')
+                yield field
+                current_offset += bytes_read
+            if current_offset > limit:
+                raise ValueError(
+                    f'Message truncated (overran limit at position {limit}) '
+                    f'in message starting at position {offset}'
+                )
+
+        return cls(get_fields())
+
     def __getitem__(self, field_id):
+        # TODO: make a way to get fields for conversions etc.?; currently
+        #  getting references to specific fields is very annoying
         result = self.value_list(field_id)
-        if not len(result):
+        if not result:
             raise KeyError(f'Field not found: {repr(field_id)}')
         if len(result) == 1:
             return result[0]
@@ -391,23 +430,18 @@ class _FieldSet(_Serializable):
     def value_list(self, field_id):
         return [field.value for field in self if field.id == field_id]
 
-    def __setitem__(self, field_id, values):
-        def to_field(value):
-            """Wrap the value in a field only if it isn't a group."""
-            if isinstance(value, Group):
-                return Group(
-                    field_id,
-                    list(value.fields),
-                    value.excess_tag_bytes,
-                    value.excess_end_tag_bytes
-                )
-            else:
-                return Field(field_id, value)
-
-        if not isinstance(values, Iterable):
-            fields_to_add = [to_field(values)]
+    def __setitem__(self, field_id, value):
+        if isinstance(value, ProtoMessage):
+            # If it's a plain message, make a SubMessage
+            fields_to_add = (Field(field_id, SubMessage(value.fields)),)
+        elif (  # value is iterable, but not one of the iterable value types
+                isinstance(value, Iterable) and
+                not isinstance(value, (ProtoMessage, PackedRepeated))
+        ):
+            fields_to_add = [Field(field_id, val) for val in value]
         else:
-            fields_to_add = [to_field(value) for value in values]
+            fields_to_add = (Field(field_id, value),)
+
         new_fields = []
         for field in self:
             # Replace the existing fields with this id at the position it's
@@ -495,7 +529,7 @@ class _FieldSet(_Serializable):
         self.fields = new_fields
         return num_parsed
 
-    def autoparse_recursive(self, parse_empty=False):
+    def autoparse_recursive(self, *, parse_empty=False):
         """
         Recursively parse submessages whenever possible, returning the total
         number of submessages parsed thusly.
@@ -588,75 +622,15 @@ class ProtoMessage(_FieldSet):
         """
         super().__init__(fields)
 
-    def __repr__(self):
-        return f'{type(self).__name__}({repr(self.fields)})'
-
-    @classmethod
-    def parse(
-            cls,
-            data,
-            offset=0,
-            limit=float('inf'),
-            allow_orphan_group_ends=False
-    ):
-        """
-        Parse a complete ProtoMessage from a bytes-like object.
-
-        Starts parsing from the given offset and consumes until the end of the
-        data or the given limit (another greater or equal offset) is reached,
-        whichever comes first. Fails if the end of the message does not fit
-        exactly to the end of the data (or the limit).
-        """
-
-        def get_fields():
-            current_offset = offset
-            while current_offset < len(data) and current_offset < limit:
-                field, bytes_read = parse_field(data, current_offset)
-                if (
-                        isinstance(field.value, GroupEnd) and
-                        not allow_orphan_group_ends
-                ):
-                    raise ValueError(f'Orphaned group end with id {field.id} '
-                                     f'at position {current_offset}')
-                yield field
-                current_offset += bytes_read
-            if current_offset > limit:
-                raise ValueError(
-                    f'Message truncated (overran limit at position {limit}) '
-                    f'in message starting at position {offset}'
-                )
-
-        return cls(get_fields())
-
     @property
     def message(self):
         return self
 
 
-def parse_field(data, offset=0):
-    try:
-        tag, tag_bytes = read_varint(data, offset)
-    except ValueError as ex:
-        raise ValueError(f'{ex.args[0]} while parsing field tag')
-    field_id = tag >> 3
-    wire_type = tag & 0b111
-    excess_tag_bytes = tag_bytes - bytes_to_encode_tag(field_id)
-    value_klass = WIRE_TYPE_KLASSES.get(wire_type)
-    if not value_klass:
-        raise ValueError(f'Invalid or unsupported field wire type '
-                         f'{wire_type} in tag at position {offset}')
-    field, field_bytes = FIELD_TYPES.get(wire_type, Field).parse(
-        field_id, wire_type,
-        data, offset=offset + tag_bytes,
-        excess_tag_bytes=excess_tag_bytes
-    )
-    return field, field_bytes + tag_bytes
-
-
 class Field(_Serializable):
     __slots__ = ('id', 'value', 'excess_tag_bytes',)
 
-    def __init__(self, field_id, value, excess_tag_bytes=0):
+    def __init__(self, field_id, value, *, excess_tag_bytes=0):
         self.id = field_id
         self.value = value
         self.excess_tag_bytes = excess_tag_bytes
@@ -691,15 +665,34 @@ class Field(_Serializable):
         yield ')'
 
     @classmethod
-    def parse(cls, field_id, wire_type, data, offset=0, excess_tag_bytes=0):
-        value_klass = WIRE_TYPE_KLASSES.get(wire_type)
-        if not value_klass:
+    def parse(cls, data, *, offset=0, explicit_group_markers=False):
+        try:
+            tag, tag_bytes = read_varint(data, offset=offset)
+        except ValueError as ex:
+            raise ValueError(f'{ex.args[0]} while parsing field tag')
+        field_id = tag >> 3
+        wire_type = tag & 0b111
+        excess_tag_bytes = tag_bytes - bytes_to_encode_tag(field_id)
+        try:
+            if explicit_group_markers:
+                value_klass = WIRE_TYPE_KLASSES_EXPLICIT_GROUP[wire_type]
+            else:
+                value_klass = WIRE_TYPE_KLASSES[wire_type]
+        except KeyError:
             raise ValueError(f'Invalid or unsupported field wire type '
                              f'{wire_type} in tag at position {offset}')
-        value, value_bytes = value_klass.parse(data, offset=offset)
+        if value_klass.wants_field_id:
+            # noinspection PyArgumentList
+            value, value_bytes = value_klass.parse(
+                data, offset=offset + tag_bytes, field_id=field_id
+            )
+        else:
+            value, value_bytes = value_klass.parse(
+                data, offset=offset + tag_bytes
+            )
         return (
-                cls(field_id, value, excess_tag_bytes=excess_tag_bytes),
-                value_bytes
+            cls(field_id, value, excess_tag_bytes=excess_tag_bytes),
+            tag_bytes + value_bytes
         )
 
     def parse_packed_repeated(self, repeated_value_type):
@@ -713,7 +706,7 @@ class Field(_Serializable):
         Raises a TypeError if the value is not a Blob, or a ValueError if it
         does not parse cleanly.
         """
-        # TODO: document up top
+        # TODO: rejigger this to be on values probably, and non-mutating
         if not isinstance(self.value, Blob):
             raise TypeError(
                 'Cannot parse non-Blob field value as a packed repeated value.'
@@ -734,7 +727,7 @@ class Field(_Serializable):
             excess_bytes=self.value.excess_bytes
         )
 
-    def parse_submessage(self, parse_empty=False):
+    def parse_submessage(self, *, parse_empty=False):
         """
         Parse the value of this field as a submessage, changeing its value from
         a Blob to a SubMessage type. Does nothing if the field is already a
@@ -747,22 +740,9 @@ class Field(_Serializable):
         Raises a TypeError if the field is of the wrong type (not a Blob), or a
         ValueError if it does not parse cleanly.
         """
-        # TODO: document up top
-        if isinstance(self.value, Blob):
-            if len(self.value.value) > 0 or parse_empty:
-                self.value = SubMessage(
-                    self.value.message.fields,
-                    self.value.excess_bytes
-                )
-                return True
-            else:
-                return False  # not parsing empty value
-        elif isinstance(self.value, SubMessage):
-            return True  # already parsed
-        else:
-            raise TypeError('Cannot parse non-Blob field value')
+        self.value = self.value.parse_submessage(parse_empty=parse_empty)
 
-    def autoparse_recursive(self, parse_empty=False):
+    def autoparse_recursive(self, *, parse_empty=False):
         """
         Recursively parse submessages whenever possible, returning the total
         number of submessages parsed thusly.
@@ -782,7 +762,7 @@ class Field(_Serializable):
         elif self.value.wire_type == Blob.wire_type:
             return Field(
                 self.id,
-                Blob(self.value.bytes, self.value.excess_bytes),
+                Blob(self.value.bytes, excess_bytes=self.value.excess_bytes),
                 excess_tag_bytes=self.excess_tag_bytes
             )
         else:
@@ -791,7 +771,7 @@ class Field(_Serializable):
             )
 
     def is_default(self):
-        return self.value.value == self.value.default_value
+        return self.value.is_default
 
     def total_excess_bytes(self):
         return self.excess_tag_bytes + self.value.total_excess_bytes()
@@ -801,145 +781,28 @@ class Field(_Serializable):
         self.value.strip_excess_bytes()
 
     def byte_size(self):
-        return (
-                bytes_to_encode_tag(self.id) +
-                self.excess_tag_bytes +
-                self.value.byte_size()
-        )
+        if self.value.wants_field_id:
+            return (
+                    bytes_to_encode_tag(self.id) +
+                    self.excess_tag_bytes +
+                    self.value.byte_size(field_id=self.id)
+            )
+        else:
+            return (
+                    bytes_to_encode_tag(self.id) +
+                    self.excess_tag_bytes +
+                    self.value.byte_size()
+            )
 
     def iter_serialize(self):
         yield write_varint(
             (self.id << 3) | self.value.wire_type,
-            self.excess_tag_bytes
+            excess_bytes=self.excess_tag_bytes
         )
-        yield from self.value.iter_serialize()
-
-
-class Group(_FieldSet):
-    __slots__ = ('id', 'excess_tag_bytes', 'excess_end_tag_bytes')
-
-    def __init__(
-            self, group_id, fields=(),
-            excess_tag_bytes=0, excess_end_tag_bytes=0
-    ):
-        super().__init__(fields)
-        self.id = group_id
-        self.excess_tag_bytes = excess_tag_bytes
-        self.excess_end_tag_bytes = excess_end_tag_bytes
-
-    def __repr__(self):
-        if self.excess_tag_bytes + self.excess_end_tag_bytes:
-            return (
-                f'{type(self).__name__}('
-                f'{repr(self.id)}, {repr(self.fields)}, '
-                f'excess_tag_bytes={repr(self.excess_tag_bytes)}, '
-                f'excess_end_tag_bytes={repr(self.excess_end_tag_bytes)}'
-                f')'
-            )
+        if self.value.wants_field_id:
+            yield from self.value.iter_serialize(field_id=self.id)
         else:
-            return (
-                f'{type(self).__name__}('
-                f'{repr(self.id)}, {repr(self.fields)}'
-                f')'
-            )
-
-    def _pretty_extra_pre(self):
-        yield f'{repr(self.id)}, '
-
-    def _pretty_extra_post(self):
-        if self.excess_tag_bytes:
-            yield f', excess_tag_bytes={repr(self.excess_tag_bytes)}'
-        if self.excess_end_tag_bytes:
-            yield f', excess_end_tag_bytes={repr(self.excess_end_tag_bytes)}'
-
-    @classmethod
-    def parse(cls, _wire_type, field_id, data, offset=0, excess_tag_bytes=0):
-        excess_end_tag_bytes = 0
-        total_bytes_read = 0
-
-        def get_fields(offset_):
-            nonlocal excess_end_tag_bytes, total_bytes_read
-            while offset_ < len(data):
-                field, bytes_read = parse_field(data, offset_)
-                offset_ += bytes_read
-                total_bytes_read += bytes_read
-                if isinstance(field.value, GroupEnd):
-                    if field.id != field_id:
-                        raise ValueError(f'Non-matching group end tag with id '
-                                         f'{field.id} at position {offset}')
-                    excess_end_tag_bytes = field.excess_tag_bytes
-                    break
-                else:
-                    yield field
-            else:
-                # Reached the end of the data without closing the group
-                raise ValueError(
-                    f'Missing group end tag while parsing group '
-                    f'with id {field_id} which began at position {offset}'
-                )
-
-        try:
-            fields = list(get_fields(offset))
-        except ValueError as ex:
-            # Append info about this group context to parsing errors
-            raise ValueError(
-                f'{ex.args[0]} in group with id {field_id} '
-                f'which began at position {offset}'
-            )
-        return cls(
-            field_id,
-            fields,
-            excess_tag_bytes=excess_tag_bytes,
-            excess_end_tag_bytes=excess_end_tag_bytes
-        ), total_bytes_read
-
-    def parse_submessage(self):
-        raise TypeError('Groups cannot be parsed further')
-
-    def unparse(self):
-        raise TypeError('Groups cannot be unparsed')
-
-    @property
-    def value(self):
-        """
-        This property is used when fields are gotten by id with indexing.
-        It makes the most sense to work with an entire group, since it
-        manages its own 'value' in the fields attribute.
-        """
-        return self
-
-    def is_default(self):
-        return not self.fields
-
-    def byte_size(self):
-        return (
-                bytes_to_encode_tag(self.id) * 2 +
-                self.excess_tag_bytes + self.excess_end_tag_bytes +
-                super().byte_size()
-        )
-
-    def total_excess_bytes(self):
-        return (
-                super().total_excess_bytes() +
-                self.excess_tag_bytes +
-                self.excess_end_tag_bytes
-        )
-
-    def strip_excess_bytes(self):
-        super().strip_excess_bytes()
-        self.excess_tag_bytes = 0
-        self.excess_end_tag_bytes = 0
-
-    def iter_serialize(self):
-        yield write_varint(
-            (self.id << 3) | GroupStart.wire_type,
-            self.excess_tag_bytes
-        )
-        yield from super().iter_serialize()
-        yield write_varint(
-            (self.id << 3) | GroupEnd.wire_type,
-            self.excess_end_tag_bytes
-        )
+            yield from self.value.iter_serialize()
 
 
 class _ParseableValue:
@@ -947,11 +810,11 @@ class _ParseableValue:
     __slots__ = ()
 
     @classmethod
-    def parse(cls, data, offset=0):
+    def parse(cls, data, *, offset=0):
         raise NotImplementedError
 
     @classmethod
-    def parse_repeated(cls, data, offset=0, limit=float('inf')):
+    def parse_repeated(cls, data, *, offset=0, limit=float('inf')):
         """
         Parses a repeated proto value from a bytes-like object.
 
@@ -974,7 +837,26 @@ class _ParseableValue:
 
 
 # noinspection PyAbstractClass
-class _SingleValue(_Serializable, _ParseableValue):
+class _ProtoValue(_Serializable):
+    __slots__ = ()
+    wants_field_id = False
+
+    def is_default(self):
+        raise NotImplementedError
+
+    @property
+    def wire_type(self):
+        raise NotImplementedError
+
+    @classmethod
+    def parse_submessage(cls, *, parse_empty=False):
+        raise ValueError(
+            f'Value of type {cls.__name__} cannot be parsed as a submessage'
+        )
+
+
+# noinspection PyAbstractClass
+class _SingleValue(_ProtoValue, _ParseableValue):
     __slots__ = ('value',)
 
     def __init__(self, value=None):
@@ -998,16 +880,15 @@ class _SingleValue(_Serializable, _ParseableValue):
         else:
             return f'{type(self).__name__}({repr(self.value)})'
 
-    def iter_pretty(self, indent, depth):
-        yield repr(self)
-
     @property
     def default_value(self):
         raise NotImplementedError
 
-    @property
-    def wire_type(self):
-        raise NotImplementedError
+    def is_default(self):
+        return self.value == self.default_value
+
+    def iter_pretty(self, indent, depth):
+        yield repr(self)
 
 
 @_register_value_types(
@@ -1027,13 +908,13 @@ class Varint(_SingleValue):
     wire_type = 0
     default_value = 0
 
-    def __init__(self, value=None, excess_bytes=0):
+    def __init__(self, value=None, *, excess_bytes=0):
         super().__init__(value)
         self.excess_bytes = excess_bytes
 
     @classmethod
-    def parse(cls, data, offset=0):
-        value, value_bytes = read_varint(data, offset)
+    def parse(cls, data, *, offset=0):
+        value, value_bytes = read_varint(data, offset=offset)
         excess_bytes = value_bytes - bytes_to_encode_varint(value)
         return cls(value, excess_bytes=excess_bytes), value_bytes
 
@@ -1047,7 +928,7 @@ class Varint(_SingleValue):
         self.excess_bytes = 0
 
     def iter_serialize(self):
-        yield write_varint(self.value, self.excess_bytes)
+        yield write_varint(self.value, excess_bytes=self.excess_bytes)
 
     @property
     def varint(self):
@@ -1055,6 +936,8 @@ class Varint(_SingleValue):
 
     @varint.setter
     def varint(self, value):
+        if value < 0:
+            raise ValueError('Varint value must be non-negative')
         self.value = value
 
     unsigned = varint
@@ -1166,7 +1049,7 @@ class Fixed4Bytes(_SingleValue):
     default_value = b'\0' * 4
 
     @classmethod
-    def parse(cls, data, offset=0):
+    def parse(cls, data, *, offset=0):
         value = data[offset:offset + 4]
         if len(value) < 4:
             raise ValueError(f'Data truncated in Fixed4Bytes value '
@@ -1232,7 +1115,7 @@ class Fixed8Bytes(_SingleValue):
     default_value = b'\0' * 8
 
     @classmethod
-    def parse(cls, data, offset=0):
+    def parse(cls, data, *, offset=0):
         value = data[offset:offset + 8]
         if len(value) < 8:
             raise ValueError(f'Data truncated in Fixed8Bytes value '
@@ -1295,14 +1178,14 @@ class Blob(_SingleValue):
     wire_type = 2
     default_value = b''
 
-    def __init__(self, value=None, excess_bytes=0):
+    def __init__(self, value=None, *, excess_bytes=0):
         super().__init__(value)
         self.excess_bytes = excess_bytes
 
     @classmethod
-    def parse(cls, data, offset=0):
+    def parse(cls, data, *, offset=0):
         try:
-            length, length_bytes = read_varint(data, offset)
+            length, length_bytes = read_varint(data, offset=offset)
         except ValueError as ex:
             raise ValueError(
                 f'{ex.args[0]} while parsing length of {type(cls).__name__}'
@@ -1327,8 +1210,17 @@ class Blob(_SingleValue):
         self.excess_bytes = 0
 
     def iter_serialize(self):
-        yield write_varint(len(self.value), self.excess_bytes)
+        yield write_varint(len(self.value), excess_bytes=self.excess_bytes)
         yield self.value
+
+    def parse_submessage(self, *, parse_empty=False):
+        if self.value or parse_empty:
+            return SubMessage(
+                self.message,
+                excess_bytes=self.excess_bytes
+            )
+        else:
+            raise ValueError('Not parsing empty field as submessage')
 
     @property
     def blob(self):
@@ -1365,19 +1257,19 @@ class Blob(_SingleValue):
     # TODO: implement and document map accessors (maybe as a view?)
 
 
-class PackedRepeated(_Serializable):
+class PackedRepeated(_ProtoValue):
     """Represents a Blob field interpreted as a valid packed repeated field."""
     __slots__ = ('values', 'excess_bytes',)
     wire_type = Blob.wire_type
 
-    def __init__(self, values=(), value_type=None, excess_bytes=0):
+    def __init__(self, values=(), *, value_type=None, excess_bytes=0):
         self.values = None  # suppress 'set outside __init__' warning
         self.set_as(values, value_type=value_type)
         self.excess_bytes = excess_bytes
 
     @property
-    def default_value(self):
-        return []
+    def is_default(self):
+        return not self.values
 
     def __eq__(self, other):
         if type(other) is not type(self):
@@ -1428,14 +1320,14 @@ class PackedRepeated(_Serializable):
     def iter_serialize(self):
         # Not exactly efficient, but we're not prescient.
         length = sum(value.byte_size() for value in self.values)
-        yield write_varint(length, self.excess_bytes)
+        yield write_varint(length, excess_bytes=self.excess_bytes)
         for value in self.values:
             yield from value.iter_serialize()
 
     @classmethod
-    def parse(cls, repeated_value_type, data, offset=0):
+    def parse(cls, repeated_value_type, data, *, offset=0):
         try:
-            length, length_bytes = read_varint(data, offset)
+            length, length_bytes = read_varint(data, offset=offset)
         except ValueError as ex:
             raise ValueError(
                 f'{ex.args[0]} while parsing length of {type(cls).__name__}'
@@ -1476,7 +1368,7 @@ class PackedRepeated(_Serializable):
 
         return list(emitter())
 
-    def set_as(self, values, value_type=None):
+    def set_as(self, values, *, value_type=None):
         """
         Set the repeated values of this field.
 
@@ -1508,29 +1400,28 @@ class PackedRepeated(_Serializable):
 @_register_value_types(
     'message',
 )
-class SubMessage(ProtoMessage, _ParseableValue):
+class SubMessage(ProtoMessage, _ProtoValue, _ParseableValue):
     """Represents a Blob field interpreted as a valid sub-message."""
     __slots__ = ('excess_bytes',)
     wire_type = Blob.wire_type
 
-    def __init__(self, fields=(), excess_bytes=0):
+    def __init__(self, fields=(), *, excess_bytes=0):
         super().__init__(fields)
         self.excess_bytes = excess_bytes
 
     def _pretty_extra_post(self):
         if self.excess_bytes:
-            yield f', excess_bytes={self.excess_bytes}',
+            yield f', excess_bytes={self.excess_bytes}'
 
-    @property
-    def default_value(self):
-        return ProtoMessage()
+    def is_default(self):
+        return not self.fields
 
     # This method intentionally has a different signature than super's.
     # noinspection PyMethodOverriding
     @classmethod
-    def parse(cls, data, offset=0):
+    def parse(cls, data, *, offset=0):
         try:
-            length, length_bytes = read_varint(data, offset)
+            length, length_bytes = read_varint(data, offset=offset)
         except ValueError as ex:
             raise ValueError(
                 f'{ex.args[0]} while parsing length of {type(cls).__name__}'
@@ -1541,7 +1432,7 @@ class SubMessage(ProtoMessage, _ParseableValue):
             data, offset=start, limit=start + length
         )
         return (
-            cls(value.fields, excess_bytes=excess_bytes),
+            cls(value, excess_bytes=excess_bytes),
             length_bytes + length
         )
 
@@ -1556,8 +1447,11 @@ class SubMessage(ProtoMessage, _ParseableValue):
         self.excess_bytes = 0
 
     def iter_serialize(self):
-        yield write_varint(super().byte_size(), self.excess_bytes)
+        yield write_varint(super().byte_size(), excess_bytes=self.excess_bytes)
         yield from super().iter_serialize()
+
+    def parse_submessage(self, *, parse_empty=False):
+        return self
 
     @property
     def bytes(self):
@@ -1575,16 +1469,111 @@ class SubMessage(ProtoMessage, _ParseableValue):
     def message(self, value):
         self.fields = list(value)
 
-    @property
-    def string(self):
-        return self.bytes.decode('utf-8')
+
+class Group(_FieldSet, _ProtoValue):
+    __slots__ = ('excess_end_tag_bytes',)
+    wire_type = 3
+    # We need to know the field id of the group to parse and serialize.
+    wants_field_id = True
+
+    def __init__(self, fields=(), *, excess_end_tag_bytes=0):
+        super().__init__(fields)
+        self.excess_end_tag_bytes = excess_end_tag_bytes
+
+    def __repr__(self):
+        if self.excess_end_tag_bytes:
+            return (
+                f'{type(self).__name__}('
+                f'{repr(self.fields)}, '
+                f'excess_end_tag_bytes={repr(self.excess_end_tag_bytes)}'
+                f')'
+            )
+        else:
+            return f'{type(self).__name__}({repr(self.fields)})'
+
+    def _pretty_extra_post(self):
+        if self.excess_end_tag_bytes:
+            yield f', excess_end_tag_bytes={repr(self.excess_end_tag_bytes)}'
+
+    # noinspection PyMethodOverriding
+    @classmethod
+    def parse(cls, data, *, offset=0, field_id):
+        excess_end_tag_bytes = 0
+        total_bytes_read = 0
+
+        def get_fields():
+            nonlocal excess_end_tag_bytes, total_bytes_read
+            current_offset = offset
+            while current_offset < len(data):
+                field, bytes_read = Field.parse(data, offset=current_offset)
+                current_offset += bytes_read
+                total_bytes_read += bytes_read
+                if isinstance(field.value, GroupEnd):
+                    if field.id != field_id:
+                        raise ValueError(f'Non-matching group end tag with id '
+                                         f'{field.id} at position {offset}')
+                    excess_end_tag_bytes = field.excess_tag_bytes
+                    return
+                else:
+                    yield field
+            else:
+                # Reached the end of the data without closing the group
+                raise ValueError('Missing group end tag')
+        try:
+            return (
+                cls(get_fields(), excess_end_tag_bytes=excess_end_tag_bytes),
+                total_bytes_read
+            )
+        except ValueError as ex:
+            # Append info about this group context to parsing errors
+            raise ValueError(
+                f'{ex.args[0]} in group with id {field_id} '
+                f'which began at position {offset}'
+            )
+
+    def parse_submessage(self, *, parse_empty=False):
+        raise TypeError('Groups cannot be parsed further')
+
+    def unparse(self):
+        raise TypeError('Groups cannot be unparsed')
+
+    def is_default(self):
+        return False
+
+    # This method intentionally has a different signature than super's (because
+    # we want field_id)
+    # noinspection PyMethodOverriding
+    def byte_size(self, *, field_id):
+        return (
+                bytes_to_encode_tag(field_id) +
+                self.excess_end_tag_bytes +
+                super().byte_size()
+        )
+
+    def total_excess_bytes(self):
+        return (
+                super().total_excess_bytes() +
+                self.excess_end_tag_bytes
+        )
+
+    def strip_excess_bytes(self):
+        super().strip_excess_bytes()
+        self.excess_end_tag_bytes = 0
+
+    # This method intentionally has a different signature than super's (because
+    # we want field_id)
+    # noinspection PyMethodOverriding
+    def iter_serialize(self, *, field_id):
+        yield from super().iter_serialize()
+        yield from Field(
+            field_id, GroupEnd(),
+            excess_tag_bytes=self.excess_end_tag_bytes
+        ).iter_serialize()
 
 
-# noinspection PyMethodMayBeStatic
-class _TagOnlyValue(_Serializable):
+# noinspection PyAbstractClass,PyMethodMayBeStatic
+class _TagOnlyValue(_ProtoValue):
     __slots__ = ()
-    value = None
-    default_value = NotImplemented
 
     def __repr__(self):
         return f'{type(self).__name__}()'
@@ -1592,9 +1581,13 @@ class _TagOnlyValue(_Serializable):
     def iter_pretty(self, indent, depth):
         yield repr(self)
 
+    # noinspection PyUnusedLocal
     @classmethod
-    def parse(cls, _data, _offset=0):
+    def parse(cls, _data, *, offset=0):
         return cls(), 0
+
+    def is_default(self):
+        return False
 
     def byte_size(self):
         return 0
@@ -1605,7 +1598,7 @@ class _TagOnlyValue(_Serializable):
 
 class GroupStart(_TagOnlyValue):
     __slots__ = ()
-    wire_type = 3
+    wire_type = Group.wire_type
 
 
 class GroupEnd(_TagOnlyValue):
@@ -1620,21 +1613,14 @@ WIRE_TYPE_KLASSES = {
         Varint,
         Fixed8Bytes,
         Blob,
-        GroupStart,
+        Group,
         GroupEnd,
         Fixed4Bytes,
     ]
 }
-
-# These are overrides for the klass of field that parses a given wiretype.
-# If a wiretype is not present, defaults to Field.
-# Currently only applies to groups. Setting this to an empty dict and passing
-# allow_orphan_group_ends=True to ProtoMessage.parse() will return messages
-# parsed with explicit GroupStart/GroupEnd fields instead of actual groups,
-# allowing the inspection of messages with mismatching or missing group
-# delimiters.
-FIELD_TYPES = {
-    GroupStart.wire_type: Group
+WIRE_TYPE_KLASSES_EXPLICIT_GROUP = {
+    **WIRE_TYPE_KLASSES,
+    GroupStart.wire_type: GroupStart,
 }
 
 # These are all the types that will appear in repr strings. We don't need to
