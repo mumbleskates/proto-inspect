@@ -391,6 +391,8 @@ class _FieldSet(_Serializable):
         data or the given limit (another greater or equal offset) is reached,
         whichever comes first. Fails if the end of the fields does not fit
         exactly to the end of the data (or the limit).
+
+        TODO: document explicit_group_markers
         """
 
         def get_fields():
@@ -416,6 +418,9 @@ class _FieldSet(_Serializable):
 
         return cls(get_fields())
 
+    def value_list(self, field_id):
+        return [field.value for field in self if field.id == field_id]
+
     def __getitem__(self, field_id):
         # TODO: make a way to get fields for conversions etc.?; currently
         #  getting references to specific fields is very annoying
@@ -426,9 +431,6 @@ class _FieldSet(_Serializable):
             return result[0]
         else:
             return result
-
-    def value_list(self, field_id):
-        return [field.value for field in self if field.id == field_id]
 
     def __setitem__(self, field_id, value):
         if isinstance(value, ProtoMessage):
@@ -1629,13 +1631,13 @@ WIRE_TYPE_KLASSES_EXPLICIT_GROUP = {
 __all__ = (
     'ProtoMessage',
     'Field',
-    'Group',
     'Varint',
     'Blob',
     'Fixed4Bytes',
     'Fixed8Bytes',
     'PackedRepeated',
     'SubMessage',
+    'Group',
     'GroupStart',
     'GroupEnd',
 )
