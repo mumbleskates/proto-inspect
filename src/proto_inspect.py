@@ -2,6 +2,7 @@
 from collections.abc import Iterable
 from operator import attrgetter
 from struct import pack, unpack
+from typing import Union
 
 __doc__ = """
 Pure python tools for inspecting unknown protobuf data. Written for py3.6+.
@@ -331,15 +332,18 @@ class _Serializable:
 
 class _FieldSet(_Serializable):
     __slots__ = ('fields',)
+    fields: Union[list, dict]
 
-    # TODO: implement a fast mode where 'fields' is a dict instead for more
-    #  efficient access; allow converting to and from that representation
-
-    def __init__(self, fields):
+    def __init__(self, fields, *, indexed):
         if not isinstance(fields, Iterable):
             raise TypeError(f'Cannot create fieldset with non-iterable type '
                             f'{repr(type(fields).__name__)}')
-        self.fields = list(fields)
+        if indexed:
+            self.fields = {}
+            for field in fields:
+                self.fields.setdefault(field.id, []).append(field)
+        else:
+            self.fields = list(fields)
 
     def __eq__(self, other):
         """
@@ -349,24 +353,43 @@ class _FieldSet(_Serializable):
         if type(other) is not type(self):
             return NotImplemented
         return (
-                sorted(other.fields, key=attrgetter('id')) ==
-                sorted(self.fields, key=attrgetter('id'))
+                sorted(other, key=attrgetter('id')) ==
+                sorted(self, key=attrgetter('id'))
         )
 
     def __iter__(self):
-        yield from self.fields
+        if self.is_indexed():
+            for group in self.fields.values():
+                yield from group
+        else:
+            yield from self.fields
 
     def __repr__(self):
         return f'{type(self).__name__}({repr(self.fields)})'
 
     def iter_pretty(self, indent, depth):
         if self.fields:
-            yield f'{type(self).__name__}([\n'
-            for field in self:
-                yield indent * (depth + 1)
-                yield from field.iter_pretty(indent, depth + 1)
-                yield ',\n'
-            yield f'{indent * depth}]'
+            yield f'{type(self).__name__}('
+            if self.is_indexed():
+                yield '{\n'
+                for index, group in self.fields.items():
+                    if group:
+                        yield indent * (depth + 1)
+                        yield f'{index}: [\n'
+                        for field in group:
+                            yield indent * (depth + 2)
+                            yield from field.iter_pretty(indent, depth + 2)
+                            yield ',\n'
+                        yield indent * (depth + 1)
+                        yield '],\n'
+                yield f'{indent * depth}}}'
+            else:
+                yield '[\n'
+                for field in self:
+                    yield indent * (depth + 1)
+                    yield from field.iter_pretty(indent, depth + 1)
+                    yield ',\n'
+                yield f'{indent * depth}]'
             yield from self._pretty_extra_post()
             yield ')'
         else:
@@ -375,6 +398,56 @@ class _FieldSet(_Serializable):
     def _pretty_extra_post(self):
         return ()
 
+    def is_indexed(self):
+        return isinstance(self.fields, dict)
+
+    def make_indexed(self):
+        new_fields = {}
+        for field in self.fields:
+            new_fields.setdefault(field.id, []).append(field)
+        self.fields = new_fields
+
+    def make_flat(self):
+        self.fields = list(self)
+
+    def _map_fields(self, transform_fn, field_ids=None):
+        """
+        Returns a copy of fields with the given transformation.
+
+        If field_ids is None, passes all fields to the transform fn. If it is a
+        container of field ids, only fields with a contained id will be mapped.
+
+        If the transform fn returns None, the field will be removed.
+        """
+        if field_ids is None:
+            field_ids = UNSIGNED_64_BIT_RANGE
+        elif not isinstance(field_ids, Iterable):
+            field_ids = (field_ids,)
+
+        if self.is_indexed():
+            new_fields = {}
+            for index, group in self.fields.items():
+                if index in field_ids:
+                    transformed = [
+                        item for item in map(transform_fn, group)
+                        if item is not None
+                    ]
+                    if transformed:  # Only carry over non-empty groups
+                        new_fields[index] = transformed
+                else:
+                    new_fields[index] = group
+        else:
+            new_fields = []
+            for field in self.fields:
+                if field.id in field_ids:
+                    transformed = transform_fn(field)
+                    if transformed is not None:
+                        new_fields.append(transformed)
+                else:
+                    new_fields.append(field)
+
+        return new_fields
+
     @classmethod
     def parse(
             cls,
@@ -382,7 +455,8 @@ class _FieldSet(_Serializable):
             *,
             offset=0,
             limit=float('inf'),
-            explicit_group_markers=False
+            indexed=False,
+            explicit_group_markers=False,
     ):
         """
         Parse a complete field set from a bytes-like object.
@@ -416,19 +490,27 @@ class _FieldSet(_Serializable):
                     f'in message starting at position {offset}'
                 )
 
-        return cls(get_fields())
+        return cls(get_fields(), indexed=indexed)
+
+    def field_list(self, field_id):
+        if self.is_indexed():
+            return list(self.fields.get(field_id, ()))
+        else:
+            return [field for field in self if field.id == field_id]
 
     def value_list(self, field_id):
-        return [field.value for field in self if field.id == field_id]
+        return [field.value for field in self.field_list(field_id)]
 
     def __getitem__(self, field_id):
-        # TODO: make a way to get fields for conversions etc.?; currently
-        #  getting references to specific fields is very annoying
         result = self.value_list(field_id)
         if not result:
             raise KeyError(f'Field not found: {repr(field_id)}')
         if len(result) == 1:
-            return result[0]
+            single = result[0]
+            if isinstance(single, PackedRepeated):
+                return list(single.values)
+            else:
+                return single
         else:
             return result
 
@@ -442,36 +524,46 @@ class _FieldSet(_Serializable):
         ):
             fields_to_add = [Field(field_id, val) for val in value]
         else:
-            fields_to_add = (Field(field_id, value),)
+            fields_to_add = [Field(field_id, value)]
 
-        new_fields = []
-        for field in self:
-            # Replace the existing fields with this id at the position it's
-            # first encountered
-            if field.id == field_id:
+        if self.is_indexed():
+            self.fields[field_id] = fields_to_add
+        else:
+            new_fields = []
+            for field in self:
+                # Replace the existing fields with this id at the position it's
+                # first encountered
+                if field.id == field_id:
+                    new_fields.extend(fields_to_add)
+                    fields_to_add = ()
+                else:
+                    new_fields.append(field)
+            if fields_to_add:
+                # If no fields with this id existed yet, add them to the end
                 new_fields.extend(fields_to_add)
-                fields_to_add = ()
-            else:
-                new_fields.append(field)
-        if fields_to_add:
-            # If no fields with this id existed yet, add them to the end
-            new_fields.extend(fields_to_add)
-        self.fields = new_fields
+            self.fields = new_fields
 
     def __delitem__(self, field_id):
-        self.fields = [field for field in self if field.id != field_id]
+        if self.is_indexed():
+            self.fields.pop(field_id, None)
+        else:
+            self.fields = [field for field in self if field.id != field_id]
 
     def sort(self):
         """Order the fields in this message by id"""
-        self.fields.sort(key=attrgetter('id'))
+        if self.is_indexed():
+            self.fields = dict(sorted(self.fields.items()))
+        else:
+            self.fields.sort(key=attrgetter('id'))
 
     # TODO: parse_multi_packed_repeated
 
     def parse_multi_submessages(
             self,
-            field_ids=(),
+            field_ids=None,
+            *,
             auto=False,
-            auto_parse_empty=False
+            auto_parse_empty=False,
     ):
         """
         Parse Blob values in the given field ids into messages and return the
@@ -484,54 +576,43 @@ class _FieldSet(_Serializable):
         are interpreted as required, and if any are not valid an error will
         be raised.
         """
-        # TODO: document up top
-        if not isinstance(field_ids, Iterable):
-            field_ids = (field_ids,)
         num_parsed = 0
-        new_fields = []
-        for field in self:
-            if field.id in field_ids:
-                if not isinstance(field.value, (Blob, SubMessage)):
-                    raise ValueError(
-                        f'Encountered field at specified id {field.id} with '
-                        f'non-Blob type {type(field.value).__name__}'
-                    )
-                if isinstance(field.value, Blob):
-                    new_fields.append(Field(
+
+        def parse_submessage_transform(field):
+            nonlocal num_parsed
+            if not isinstance(field.value, (Blob, SubMessage)):
+                raise ValueError(
+                    f'Encountered field at specified id {field.id} with '
+                    f'non-Blob type {type(field.value).__name__}'
+                )
+            if (
+                    isinstance(field.value, Blob) and
+                    (len(field.value.value) > 0 or auto_parse_empty)
+            ):
+                try:
+                    parsed = Field(
                         field.id,
                         SubMessage(
                             field.value.message,
                             excess_bytes=field.value.excess_bytes
                         ),
                         excess_tag_bytes=field.excess_tag_bytes
-                    ))
+                    )
                     num_parsed += 1
-                else:
-                    new_fields.append(field)
-            elif auto:
-                if (
-                        isinstance(field.value, Blob) and
-                        (len(field.value.value) > 0 or auto_parse_empty)
-                ):
-                    try:
-                        new_fields.append(Field(
-                            field.id,
-                            SubMessage(
-                                field.value.message,
-                                excess_bytes=field.value.excess_bytes
-                            ),
-                            excess_tag_bytes=field.excess_tag_bytes
-                        ))
-                        num_parsed += 1
-                    except ValueError:
-                        new_fields.append(field)
-                else:
-                    new_fields.append(field)
+                    return parsed
+                except ValueError:
+                    if auto:
+                        return field
+                    else:
+                        raise
+            else:
+                return field
 
-        self.fields = new_fields
+        self.fields = self._map_fields(parse_submessage_transform, field_ids)
         return num_parsed
 
     def autoparse_recursive(self, *, parse_empty=False):
+        # TODO: wrap functionality into parse_multi_submessages
         """
         Recursively parse submessages whenever possible, returning the total
         number of submessages parsed thusly.
@@ -540,7 +621,7 @@ class _FieldSet(_Serializable):
         # of altered fields (like unparse_fields does) because if we are only
         # trying to parse anything that *can* be parsed and there is no failure
         # mode.
-        return _recursive_autoparse(self.fields, parse_empty)
+        return _recursive_autoparse(self, parse_empty)
 
     def unparse_fields(self, field_ids=None):
         """
@@ -549,20 +630,16 @@ class _FieldSet(_Serializable):
 
         If field_ids is None, performs this action on all fields.
         """
-        if field_ids is not None and not isinstance(field_ids, Iterable):
-            field_ids = (field_ids,)
-        new_fields = []
         num_unparsed = 0
-        for field in self:
-            if field_ids is None or field.id in field_ids:
-                unparsed = field.unparsed()
-                if unparsed is not field:
-                    new_fields.append(unparsed)
-                    num_unparsed += 1
-            else:
-                new_fields.append(field)
 
-        self.fields = new_fields
+        def unparse_transform(field):
+            nonlocal num_unparsed
+            unparsed = field.unparsed()
+            if unparsed is not field:
+                num_unparsed += 1
+            return unparsed
+
+        self.fields = self._map_fields(unparse_transform, field_ids)
         return num_unparsed
 
     def byte_size(self):
@@ -591,9 +668,18 @@ class _FieldSet(_Serializable):
         Note: This will also strip submessages, even though empty submessages
         may be represented intentionally.
         """
-        old_len = len(self.fields)
-        self.fields = [field for field in self if not field.is_default()]
-        return old_len - len(self.fields)
+        fields_stripped = 0
+
+        def strip_default_transform(field):
+            nonlocal fields_stripped
+            if field.is_default():
+                fields_stripped += 1
+                return None
+            else:
+                return field
+
+        self.fields = self._map_fields(strip_default_transform, self.fields)
+        return fields_stripped
 
     def total_excess_bytes(self):
         """
@@ -618,11 +704,11 @@ class _FieldSet(_Serializable):
 class ProtoMessage(_FieldSet):
     __slots__ = ()
 
-    def __init__(self, fields=()):
+    def __init__(self, fields=(), *, indexed=False):
         """
         Create a new ProtoMessage with the given iterable of protobuf Fields.
         """
-        super().__init__(fields)
+        super().__init__(fields, indexed=indexed)
 
     @property
     def message(self):
@@ -1407,8 +1493,8 @@ class SubMessage(ProtoMessage, _ProtoValue, _ParseableValue):
     __slots__ = ('excess_bytes',)
     wire_type = Blob.wire_type
 
-    def __init__(self, fields=(), *, excess_bytes=0):
-        super().__init__(fields)
+    def __init__(self, fields=(), *, indexed=False, excess_bytes=0):
+        super().__init__(fields, indexed=indexed)
         self.excess_bytes = excess_bytes
 
     def _pretty_extra_post(self):
@@ -1421,7 +1507,7 @@ class SubMessage(ProtoMessage, _ProtoValue, _ParseableValue):
     # This method intentionally has a different signature than super's.
     # noinspection PyMethodOverriding
     @classmethod
-    def parse(cls, data, *, offset=0):
+    def parse(cls, data, *, offset=0, indexed=False):
         try:
             length, length_bytes = read_varint(data, offset=offset)
         except ValueError as ex:
@@ -1434,7 +1520,7 @@ class SubMessage(ProtoMessage, _ProtoValue, _ParseableValue):
             data, offset=start, limit=start + length
         )
         return (
-            cls(value, excess_bytes=excess_bytes),
+            cls(value, indexed=indexed, excess_bytes=excess_bytes),
             length_bytes + length
         )
 
@@ -1478,8 +1564,8 @@ class Group(_FieldSet, _ProtoValue):
     # We need to know the field id of the group to parse and serialize.
     wants_field_id = True
 
-    def __init__(self, fields=(), *, excess_end_tag_bytes=0):
-        super().__init__(fields)
+    def __init__(self, fields=(), *, excess_end_tag_bytes=0, indexed=False):
+        super().__init__(fields, indexed=indexed)
         self.excess_end_tag_bytes = excess_end_tag_bytes
 
     def __repr__(self):
@@ -1499,7 +1585,7 @@ class Group(_FieldSet, _ProtoValue):
 
     # noinspection PyMethodOverriding
     @classmethod
-    def parse(cls, data, *, offset=0, field_id):
+    def parse(cls, data, *, offset=0, field_id, indexed=False):
         excess_end_tag_bytes = 0
         total_bytes_read = 0
 
@@ -1521,9 +1607,14 @@ class Group(_FieldSet, _ProtoValue):
             else:
                 # Reached the end of the data without closing the group
                 raise ValueError('Missing group end tag')
+
         try:
             return (
-                cls(get_fields(), excess_end_tag_bytes=excess_end_tag_bytes),
+                cls(
+                    get_fields(),
+                    indexed=indexed,
+                    excess_end_tag_bytes=excess_end_tag_bytes,
+                ),
                 total_bytes_read
             )
         except ValueError as ex:
