@@ -8,7 +8,7 @@ setup(
     version='0.2',
     author='Kent Ross',
     author_email='k@mad.cash',
-    url='',
+    url='https://github.com/mumbleskates/proto-inspect',
     license='MIT',
     classifiers=[
         'Development Status :: 4 - Beta',
