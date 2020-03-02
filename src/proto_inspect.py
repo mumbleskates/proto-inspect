@@ -175,6 +175,10 @@ APIs unique to messages and groups:
         Note that this will also remove zero values from e.g. repeated fields,
         zero-length serialized sub-message fields, and other values that are
         still serialized in proto3 even when they are default; exercise caution.
+
+    * paths_and_values()
+        Recursively yields all the values in the proto with the paths of field
+        ids traversed to reach them.
 """
 
 NoneType = type(None)
@@ -881,6 +885,32 @@ class Field(_Serializable):
                     self.excess_tag_bytes +
                     self.value.byte_size()
             )
+
+    def paths_and_values(self, *, path_prefix=()):
+        """
+        Yields (path, value) tuples for each field and sub-field in the proto,
+        recursively. The path will be a tuple of field number ints; for
+        example, the path (1,) represents that the value has field id 1 at the
+        top level; (2, 3, 2, 1) means that it is at field 1, inside field 2,
+        inside field 3, inside field 2 at the top level. The given path does not
+        include any information about where in repeated fields the value exists,
+        and so is not sufficient to completely locate the value.
+
+        This can be used to build a complete accounting of which fields and
+        subfields of a proto are consuming the most space, for example:
+
+        account = collections.Counter()
+        for path, val in msg.paths_and_values():
+            account[path] += val.byte_size()
+
+        ...or perhaps to programmatically find at which path in the proto a
+        certain value occurs with a full search.
+        """
+        for field in self.fields:
+            this_path = (*path_prefix, field.id)
+            yield this_path, field.value
+            if isinstance(field.value, _FieldSet):
+                yield from field.value.paths_and_values(path_prefix=this_path)
 
     def iter_serialize(self):
         yield write_varint(
