@@ -181,8 +181,6 @@ APIs unique to messages and groups:
         ids traversed to reach them.
 """
 
-NoneType = type(None)
-
 UNSIGNED_64_BIT_RANGE = range(0x1_0000_0000_0000_0000)
 SIGNED_64_BIT_RANGE = range(-0x8000_0000_0000_0000, 0x8000_0000_0000_0000)
 UNSIGNED_32_BIT_RANGE = range(0x1_0000_0000)
@@ -337,6 +335,7 @@ class _Serializable:
 class _FieldSet(_Serializable):
     __slots__ = ('fields',)
     fields: Union[list, dict]
+    delineator_type = ()  # no delineator
 
     def __init__(self, fields, *, indexed):
         if not isinstance(fields, Iterable):
@@ -461,6 +460,7 @@ class _FieldSet(_Serializable):
             limit=float('inf'),
             indexed=False,
             explicit_group_markers=False,
+            field_id=None,
     ):
         """
         Parse a complete field set from a bytes-like object.
@@ -472,14 +472,28 @@ class _FieldSet(_Serializable):
 
         TODO: document explicit_group_markers
         """
+        extra_args = {}
 
         def get_fields():
             current_offset = offset
+            found_delineator = False if cls.delineator_type else True
             while current_offset < len(data) and current_offset < limit:
                 field, bytes_read = Field.parse(
                     data, offset=current_offset,
                     explicit_group_markers=explicit_group_markers
                 )
+                current_offset += bytes_read
+                if (
+                        isinstance(field.value, cls.delineator_type)
+                        and not explicit_group_markers
+                ):
+                    if field.id != field_id:
+                        raise ValueError(f'Non-matching group end tag with id '
+                                         f'{field.id} at position '
+                                         f'{current_offset - bytes_read}')
+                    extra_args['excess_end_tag_bytes'] = field.excess_tag_bytes
+                    found_delineator = True
+                    break
                 if (
                         isinstance(field.value, GroupEnd) and
                         not explicit_group_markers
@@ -487,14 +501,27 @@ class _FieldSet(_Serializable):
                     raise ValueError(f'Orphaned group end with id {field.id} '
                                      f'at position {current_offset}')
                 yield field
-                current_offset += bytes_read
             if current_offset > limit:
                 raise ValueError(
                     f'Message truncated (overran limit at position {limit}) '
-                    f'in message starting at position {offset}'
+                    f'in fieldset starting at position {offset}'
+                )
+            if not found_delineator:
+                raise ValueError(
+                    f'Fieldset truncated (reached limit at position {limit} '
+                    f'without finding delineator) '
+                    f'in fieldset starting at position {offset}'
                 )
 
-        return cls(get_fields(), indexed=indexed)
+        try:
+            return cls(get_fields(), indexed=indexed, **extra_args)
+        except ValueError as ex:
+            if field_id:
+                raise ValueError(
+                    f'{ex.args[0]} in group with id {field_id} '
+                    f'which began at position {offset}'
+                )
+            raise
 
     def field_list(self, field_id):
         if self.is_indexed():
@@ -799,15 +826,9 @@ class Field(_Serializable):
         except KeyError:
             raise ValueError(f'Invalid or unsupported field wire type '
                              f'{wire_type} in tag at position {offset}')
-        if value_klass.wants_field_id:
-            # noinspection PyArgumentList
-            value, value_bytes = value_klass.parse(
-                data, offset=offset + tag_bytes, field_id=field_id
-            )
-        else:
-            value, value_bytes = value_klass.parse(
-                data, offset=offset + tag_bytes
-            )
+        value, value_bytes = value_klass.parse(
+            data, offset=offset + tag_bytes, field_id=field_id
+        )
         return (
             cls(field_id, value, excess_tag_bytes=excess_tag_bytes),
             tag_bytes + value_bytes
@@ -899,28 +920,20 @@ class Field(_Serializable):
         self.value.strip_excess_bytes()
 
     def byte_size(self):
-        if self.value.wants_field_id:
-            return (
-                    bytes_to_encode_tag(self.id) +
-                    self.excess_tag_bytes +
-                    self.value.byte_size(field_id=self.id)
-            )
-        else:
-            return (
-                    bytes_to_encode_tag(self.id) +
-                    self.excess_tag_bytes +
-                    self.value.byte_size()
-            )
+        return (
+                bytes_to_encode_tag(self.id) +
+                self.excess_tag_bytes +
+                self.value.byte_size() +
+                self.value.delineator_size(field_id=self.id)
+        )
 
     def iter_serialize(self):
         yield write_varint(
             (self.id << 3) | self.value.wire_type,
             excess_bytes=self.excess_tag_bytes
         )
-        if self.value.wants_field_id:
-            yield from self.value.iter_serialize(field_id=self.id)
-        else:
-            yield from self.value.iter_serialize()
+        yield from self.value.iter_serialize()
+        yield from self.value.delineator_iter_serialize(field_id=self.id)
 
 
 class _ParseableValue:
@@ -928,7 +941,7 @@ class _ParseableValue:
     __slots__ = ()
 
     @classmethod
-    def parse(cls, data, *, offset=0):
+    def parse(cls, data, *, offset=0, field_id=None):
         raise NotImplementedError
 
     @classmethod
@@ -957,7 +970,6 @@ class _ParseableValue:
 # noinspection PyAbstractClass
 class _ProtoValue(_Serializable):
     __slots__ = ()
-    wants_field_id = False
 
     def is_default(self):
         raise NotImplementedError
@@ -971,6 +983,12 @@ class _ProtoValue(_Serializable):
         raise ValueError(
             f'Value of type {cls.__name__} cannot be parsed as a submessage'
         )
+
+    def delineator_size(self, field_id):
+        return 0
+
+    def delineator_iter_serialize(self, field_id):
+        return ()
 
 
 # noinspection PyAbstractClass
@@ -1031,7 +1049,7 @@ class Varint(_SingleValue):
         self.excess_bytes = excess_bytes
 
     @classmethod
-    def parse(cls, data, *, offset=0):
+    def parse(cls, data, *, offset=0, field_id=None):
         value, value_bytes = read_varint(data, offset=offset)
         excess_bytes = value_bytes - bytes_to_encode_varint(value)
         return cls(value, excess_bytes=excess_bytes), value_bytes
@@ -1167,7 +1185,7 @@ class Fixed4Bytes(_SingleValue):
     default_value = b'\0' * 4
 
     @classmethod
-    def parse(cls, data, *, offset=0):
+    def parse(cls, data, *, offset=0, field_id=None):
         value = data[offset:offset + 4]
         if len(value) < 4:
             raise ValueError(f'Data truncated in Fixed4Bytes value '
@@ -1233,7 +1251,7 @@ class Fixed8Bytes(_SingleValue):
     default_value = b'\0' * 8
 
     @classmethod
-    def parse(cls, data, *, offset=0):
+    def parse(cls, data, *, offset=0, field_id=None):
         value = data[offset:offset + 8]
         if len(value) < 8:
             raise ValueError(f'Data truncated in Fixed8Bytes value '
@@ -1301,7 +1319,7 @@ class Blob(_SingleValue):
         self.excess_bytes = excess_bytes
 
     @classmethod
-    def parse(cls, data, *, offset=0):
+    def parse(cls, data, *, offset=0, field_id=None):
         try:
             length, length_bytes = read_varint(data, offset=offset)
         except ValueError as ex:
@@ -1443,7 +1461,7 @@ class PackedRepeated(_ProtoValue):
             yield from value.iter_serialize()
 
     @classmethod
-    def parse(cls, repeated_value_type, data, *, offset=0):
+    def parse(cls, repeated_value_type, data, *, offset=0, field_id=None):
         try:
             length, length_bytes = read_varint(data, offset=offset)
         except ValueError as ex:
@@ -1537,7 +1555,7 @@ class SubMessage(ProtoMessage, _ProtoValue, _ParseableValue):
     # This method intentionally has a different signature than super's.
     # noinspection PyMethodOverriding
     @classmethod
-    def parse(cls, data, *, offset=0, indexed=False):
+    def parse(cls, data, *, offset=0, indexed=False, field_id=None):
         try:
             length, length_bytes = read_varint(data, offset=offset)
         except ValueError as ex:
@@ -1588,13 +1606,47 @@ class SubMessage(ProtoMessage, _ProtoValue, _ParseableValue):
         self.fields = list(value)
 
 
+# noinspection PyAbstractClass,PyMethodMayBeStatic
+class _TagOnlyValue(_ProtoValue):
+    __slots__ = ()
+
+    def __repr__(self):
+        return f'{type(self).__name__}()'
+
+    def iter_pretty(self, indent, depth):
+        yield repr(self)
+
+    # noinspection PyUnusedLocal
+    @classmethod
+    def parse(cls, _data, *, offset=0, field_id=None):
+        return cls(), 0
+
+    def is_default(self):
+        return False
+
+    def byte_size(self):
+        return 0
+
+    def iter_serialize(self):
+        return ()  # nothing
+
+
+class GroupStart(_TagOnlyValue):
+    __slots__ = ()
+    wire_type = 3
+
+
+class GroupEnd(_TagOnlyValue):
+    __slots__ = ()
+    wire_type = 4
+
+
 class Group(_FieldSet, _ProtoValue):
     __slots__ = ('excess_end_tag_bytes',)
-    wire_type = 3
-    # We need to know the field id of the group to parse and serialize.
-    wants_field_id = True
+    wire_type = GroupStart.wire_type
+    delineator_type = GroupEnd
 
-    def __init__(self, fields=(), *, excess_end_tag_bytes=0, indexed=False):
+    def __init__(self, fields=(), *, indexed=False, excess_end_tag_bytes=0):
         super().__init__(fields, indexed=indexed)
         self.excess_end_tag_bytes = excess_end_tag_bytes
 
@@ -1613,47 +1665,6 @@ class Group(_FieldSet, _ProtoValue):
         if self.excess_end_tag_bytes:
             yield f', excess_end_tag_bytes={repr(self.excess_end_tag_bytes)}'
 
-    # noinspection PyMethodOverriding
-    @classmethod
-    def parse(cls, data, *, offset=0, field_id, indexed=False):
-        excess_end_tag_bytes = 0
-        total_bytes_read = 0
-
-        def get_fields():
-            nonlocal excess_end_tag_bytes, total_bytes_read
-            current_offset = offset
-            while current_offset < len(data):
-                field, bytes_read = Field.parse(data, offset=current_offset)
-                current_offset += bytes_read
-                total_bytes_read += bytes_read
-                if isinstance(field.value, GroupEnd):
-                    if field.id != field_id:
-                        raise ValueError(f'Non-matching group end tag with id '
-                                         f'{field.id} at position {offset}')
-                    excess_end_tag_bytes = field.excess_tag_bytes
-                    return
-                else:
-                    yield field
-            else:
-                # Reached the end of the data without closing the group
-                raise ValueError('Missing group end tag')
-
-        try:
-            return (
-                cls(
-                    get_fields(),
-                    indexed=indexed,
-                    excess_end_tag_bytes=excess_end_tag_bytes,
-                ),
-                total_bytes_read
-            )
-        except ValueError as ex:
-            # Append info about this group context to parsing errors
-            raise ValueError(
-                f'{ex.args[0]} in group with id {field_id} '
-                f'which began at position {offset}'
-            )
-
     def parse_submessage(self, *, parse_empty=False):
         raise TypeError('Groups cannot be parsed further')
 
@@ -1663,70 +1674,25 @@ class Group(_FieldSet, _ProtoValue):
     def is_default(self):
         return False
 
-    # This method intentionally has a different signature than super's (because
-    # we want field_id)
-    # noinspection PyMethodOverriding
-    def byte_size(self, *, field_id):
-        return (
-                bytes_to_encode_tag(field_id) +
-                self.excess_end_tag_bytes +
-                super().byte_size()
-        )
-
     def total_excess_bytes(self):
         return (
                 super().total_excess_bytes() +
                 self.excess_end_tag_bytes
         )
 
-    def strip_excess_bytes(self):
-        super().strip_excess_bytes()
-        self.excess_end_tag_bytes = 0
+    def delineator_size(self, field_id):
+        return bytes_to_encode_tag(field_id) + self.excess_end_tag_bytes
 
-    # This method intentionally has a different signature than super's (because
-    # we want field_id)
-    # noinspection PyMethodOverriding
-    def iter_serialize(self, *, field_id):
-        yield from super().iter_serialize()
-        yield from Field(
-            field_id, GroupEnd(),
+    def delineator_iter_serialize(self, field_id):
+        return Field(
+            field_id,
+            self.delineator_type(),
             excess_tag_bytes=self.excess_end_tag_bytes
         ).iter_serialize()
 
-
-# noinspection PyAbstractClass,PyMethodMayBeStatic
-class _TagOnlyValue(_ProtoValue):
-    __slots__ = ()
-
-    def __repr__(self):
-        return f'{type(self).__name__}()'
-
-    def iter_pretty(self, indent, depth):
-        yield repr(self)
-
-    # noinspection PyUnusedLocal
-    @classmethod
-    def parse(cls, _data, *, offset=0):
-        return cls(), 0
-
-    def is_default(self):
-        return False
-
-    def byte_size(self):
-        return 0
-
-    def iter_serialize(self):
-        return ()  # nothing
-
-
-class GroupStart(_TagOnlyValue):
-    __slots__ = ()
-    wire_type = Group.wire_type
-
-
-class GroupEnd(_TagOnlyValue):
-    __slots__ = ()
-    wire_type = 4
+    def strip_excess_bytes(self):
+        super().strip_excess_bytes()
+        self.excess_end_tag_bytes = 0
 
 
 # Mapping from wire type to value klass.
