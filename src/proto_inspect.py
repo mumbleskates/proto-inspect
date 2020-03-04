@@ -518,8 +518,8 @@ class _FieldSet(_Serializable):
 
         try:
             return (
-                total_bytes_read,
-                cls(get_fields(), indexed=indexed, **extra_args)
+                cls(get_fields(), indexed=indexed, **extra_args),
+                total_bytes_read
             )
         except ValueError as ex:
             if field_id:
@@ -783,7 +783,7 @@ class ProtoMessage(_FieldSet):
             indexed=False,
             explicit_group_markers=False,
     ):
-        bytes_read, result = super(cls, cls).parse(
+        result, bytes_read = super(cls, cls).parse(
             data,
             offset=offset,
             limit=limit,
