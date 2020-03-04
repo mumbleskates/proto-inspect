@@ -473,8 +473,10 @@ class _FieldSet(_Serializable):
         TODO: document explicit_group_markers
         """
         extra_args = {}
+        total_bytes_read = 0
 
         def get_fields():
+            nonlocal total_bytes_read
             current_offset = offset
             found_delineator = False if cls.delineator_type else True
             while current_offset < len(data) and current_offset < limit:
@@ -512,9 +514,13 @@ class _FieldSet(_Serializable):
                     f'without finding delineator) '
                     f'in fieldset starting at position {offset}'
                 )
+            total_bytes_read = current_offset - offset
 
         try:
-            return cls(get_fields(), indexed=indexed, **extra_args)
+            return (
+                total_bytes_read,
+                cls(get_fields(), indexed=indexed, **extra_args)
+            )
         except ValueError as ex:
             if field_id:
                 raise ValueError(
@@ -766,6 +772,25 @@ class ProtoMessage(_FieldSet):
         Create a new ProtoMessage with the given iterable of protobuf Fields.
         """
         super().__init__(fields, indexed=indexed)
+
+    @classmethod
+    def parse(
+            cls,
+            data,
+            *,
+            offset=0,
+            limit=float('inf'),
+            indexed=False,
+            explicit_group_markers=False,
+    ):
+        bytes_read, result = super(cls, cls).parse(
+            data,
+            offset=offset,
+            limit=limit,
+            indexed=indexed,
+            explicit_group_markers=explicit_group_markers
+        )
+        return result
 
     @property
     def message(self):
