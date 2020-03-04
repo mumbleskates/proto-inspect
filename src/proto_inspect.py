@@ -517,6 +517,8 @@ class _FieldSet(_Serializable):
             total_bytes_read = current_offset - offset
 
         try:
+            # Extra args are intentional.
+            # noinspection PyArgumentList
             return (
                 cls(get_fields(), indexed=indexed, **extra_args),
                 total_bytes_read
@@ -773,6 +775,8 @@ class ProtoMessage(_FieldSet):
         """
         super().__init__(fields, indexed=indexed)
 
+    # This method intentionally has a different signature than super's.
+    # noinspection PyMethodOverriding
     @classmethod
     def parse(
             cls,
@@ -1485,6 +1489,7 @@ class PackedRepeated(_ProtoValue):
         for value in self.values:
             yield from value.iter_serialize()
 
+    # noinspection PyUnusedLocal
     @classmethod
     def parse(cls, repeated_value_type, data, *, offset=0, field_id=None):
         try:
