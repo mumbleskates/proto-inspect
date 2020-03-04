@@ -285,19 +285,19 @@ def bytes_to_encode_tag(tag_id):
 
 def _recursive_autoparse(fields, parse_empty):
     """
-    Auto-parses a field into submessages recursively, returning the number
+    Auto-parses fields into submessages recursively, returning the number
     of submessages successfully parsed.
     """
     num_parsed = 0
     for field in fields:
         try:
-            submessage = field.value.parse_submessage()
-            if submessage is not field.value:
-                num_parsed += 1 + _recursive_autoparse(
-                    submessage.fields,
-                    parse_empty
-                )
-                field.value = submessage
+            if not isinstance(field.value, _FieldSet):
+                field.parse_submessage(parse_empty=parse_empty)
+                num_parsed += 1
+            num_parsed += _recursive_autoparse(
+                field.value.fields,
+                parse_empty
+            )
         except (TypeError, ValueError):
             pass
     return num_parsed
