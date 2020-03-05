@@ -732,31 +732,39 @@ class _FieldSet(_Serializable):
         for field in self:
             field.strip_excess_bytes()
 
-    def paths_and_values(self, *, path_prefix=()):
+    def paths_and_fields(self, *, path_prefix=()):
         """
-        Yields (path, value) tuples for each field and sub-field in the proto,
+        Yields (path, field) tuples for each field and sub-field in the proto,
         recursively. The path will be a tuple of field number ints; for
-        example, the path (1,) represents that the value has field id 1 at the
-        top level; (2, 3, 2, 1) means that it is at field 1, inside field 2,
-        inside field 3, inside field 2 at the top level. The given path does not
+        example, the path (1,) represents that the field has id 1 at the top
+        level; (2, 3, 2, 1) means that it is at field 1, inside field 2, inside
+        field 3, inside field 2 at the top level. The given path does not
         include any information about where in repeated fields the value exists,
-        and so is not sufficient to completely locate the value.
+        and so is not sufficient to completely locate that exact field.
 
         This can be used to build a complete accounting of which fields and
         subfields of a proto are consuming the most space, for example:
 
         account = collections.Counter()
-        for path, val in msg.paths_and_values():
-            account[path] += val.byte_size()
+        for path, field in msg.paths_and_fields():
+            account[path] += field.byte_size()
 
         ...or perhaps to programmatically find at which path in the proto a
-        certain value occurs with a full search.
+        certain value occurs with a full search. See also: paths_and_values()
         """
         for field in self.fields:
             this_path = (*path_prefix, field.id)
-            yield this_path, field.value
+            yield this_path, field
             if isinstance(field.value, _FieldSet):
-                yield from field.value.paths_and_values(path_prefix=this_path)
+                yield from field.value.paths_and_fields(path_prefix=this_path)
+
+    def paths_and_values(self, *, path_prefix=()):
+        """
+        Yields the same results as paths_and_fields, but unwraps the field
+        values first.
+        """
+        for path, field in self.paths_and_fields(path_prefix=path_prefix):
+            yield path, field.value
 
     def iter_serialize(self):
         for field in self:

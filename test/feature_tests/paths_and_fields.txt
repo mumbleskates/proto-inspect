@@ -1,0 +1,61 @@
+>>> from proto_inspect import *
+>>> m = ProtoMessage([
+...     Field(1, Blob(b'abc')),
+...     Field(2, SubMessage([
+...         Field(3, Varint(5)),
+...     ])),
+...     Field(2, SubMessage([
+...         Field(1, Varint(1)),
+...         Field(3, Varint(6)),
+...     ])),
+...     Field(4, Group([
+...         Field(5, SubMessage([
+...             Field(6, Blob(b'foo')),
+...             Field(6, Blob(b'bar')),
+...             Field(6, Blob(b'baz')),
+...             Field(7, Varint(777)),
+...         ])),
+...     ])),
+... ])
+...
+
+We can look at values' locations by type:
+
+>>> [path for path, value in m.paths_and_values() if type(value) is Blob]
+[(1,), (4, 5, 6), (4, 5, 6), (4, 5, 6)]
+>>> [path for path, value in m.paths_and_values() if type(value) is Varint]
+[(2, 3), (2, 1), (2, 3), (4, 5, 7)]
+
+We can get an accounting of the size of the proto:
+
+>>> from collections import Counter
+>>> account = Counter()
+>>> for path, field in m.paths_and_fields():
+...     account[path] += field.byte_size()
+...
+>>> for path, size in account.most_common():
+...     print(size, path)
+...
+22 (4,)
+20 (4, 5)
+15 (4, 5, 6)
+10 (2,)
+5 (1,)
+4 (2, 3)
+3 (4, 5, 7)
+2 (2, 1)
+
+An accounting of the size of the top level fields of a proto should always add
+up to the total size of the proto itself:
+
+>>> sum(size for path, size in account.items() if len(path) == 1) == m.byte_size()
+True
+
+We can also get an accounting of the values only, without field tag overhead:
+
+>>> val_account = Counter()
+>>> for path, value in m.paths_and_values():
+...     val_account[path] += value.byte_size()
+...
+>>> val_account.most_common(3)
+[((4,), 20), ((4, 5), 19), ((4, 5, 6), 12)]
