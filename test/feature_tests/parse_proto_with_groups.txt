@@ -1,0 +1,18 @@
+>>> from proto_inspect import *
+>>> m = ProtoMessage([
+...     Field(1, Group([
+...         Field(1, Blob(b'this group has a field')),
+...     ])),
+...     Field(13, Varint(105)),
+... ])
+...
+>>> m.serialize()
+b'\x0b\n\x16this group has a field\x0chi'
+>>> ProtoMessage.parse(m.serialize()).pretty_print()
+ProtoMessage([
+    Field(1, Group([
+        Field(1, Blob(b'this group has a field')),
+    ])),
+    Field(13, Varint(105)),
+])
+>>>
