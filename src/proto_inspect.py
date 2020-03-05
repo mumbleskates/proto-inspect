@@ -490,9 +490,11 @@ class _FieldSet(_Serializable):
                         and not explicit_group_markers
                 ):
                     if field.id != field_id:
-                        raise ValueError(f'Non-matching group end tag with id '
-                                         f'{field.id} at position '
-                                         f'{current_offset - bytes_read}')
+                        raise ValueError(
+                            f'Non-matching delineator for {cls.__name__} '
+                            f'with id {field.id} at position '
+                            f'{current_offset - bytes_read}'
+                        )
                     extra_args['excess_end_tag_bytes'] = field.excess_tag_bytes
                     found_delineator = True
                     break
@@ -505,13 +507,13 @@ class _FieldSet(_Serializable):
                 yield field
             if current_offset > limit:
                 raise ValueError(
-                    f'Message truncated (overran limit at position {limit}) '
-                    f'in fieldset starting at position {offset}'
+                    f'{cls.__name__} truncated (overran limit at position '
+                    f'{limit}) in fieldset starting at position {offset}'
                 )
             if not found_delineator:
                 raise ValueError(
-                    f'Fieldset truncated (reached limit at position {limit} '
-                    f'without finding delineator) '
+                    f'{cls.__name__} truncated (reached limit at position '
+                    f'{limit} without finding delineator) '
                     f'in fieldset starting at position {offset}'
                 )
             total_bytes_read = current_offset - offset
