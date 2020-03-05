@@ -795,7 +795,7 @@ class ProtoMessage(_FieldSet):
             indexed=False,
             explicit_group_markers=False,
     ):
-        result, bytes_read = super(cls, cls).parse(
+        result, bytes_read = super().parse(
             data,
             offset=offset,
             limit=limit,
@@ -1601,7 +1601,7 @@ class SubMessage(ProtoMessage, _ProtoValue, _ParseableValue):
             )
         excess_bytes = length_bytes - bytes_to_encode_varint(length)
         start = offset + length_bytes
-        value, length = ProtoMessage.parse(
+        value = ProtoMessage.parse(
             data, offset=start, limit=start + length
         )
         return (
