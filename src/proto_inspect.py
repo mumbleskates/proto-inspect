@@ -880,18 +880,8 @@ class Field(_Serializable):
                 'Cannot parse non-Blob field value as a packed repeated value.'
             )
 
-        def producer():
-            data = self.value.bytes
-            offset = 0
-            while offset < len(data):
-                value, value_bytes = repeated_value_type.parse(
-                    data, offset=offset
-                )
-                yield value
-                offset += value_bytes
-
         self.value = PackedRepeated(
-            producer(),
+            repeated_value_type.parse_repeated(self.value.value),
             excess_bytes=self.value.excess_bytes
         )
 
