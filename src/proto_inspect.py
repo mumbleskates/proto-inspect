@@ -405,12 +405,18 @@ class _FieldSet(_Serializable):
         return isinstance(self.fields, dict)
 
     def make_indexed(self):
+        """
+        Makes this message or group indexed. If it is already indexed but some
+        of the fields in the message have had their id changed, this reindexes
+        the fields so they are all accessible by their id.
+        """
         new_fields = {}
-        for field in self.fields:
+        for field in self:
             new_fields.setdefault(field.id, []).append(field)
         self.fields = new_fields
 
     def make_flat(self):
+        """Flattens the representation of the fields to a fully ordered list."""
         self.fields = list(self)
 
     def _map_fields(self, transform_fn, field_ids=None):
@@ -470,7 +476,17 @@ class _FieldSet(_Serializable):
         whichever comes first. Fails if the end of the fields does not fit
         exactly to the end of the data (or the limit).
 
-        TODO: document explicit_group_markers
+        If indexed is set to True, the message's fields will be stored indexed
+        by field id. This loses information about the exact ordering of fields
+        (for example, if field 1 is repeated but has other fields interspersed
+        in between).
+
+        If explicit_group_markers is set to True, rather than parsing groups as
+        nested structures (and validating that group end tags correctly match),
+        GroupStart and GroupEnd field tags will be listed explicitly in the
+        parsed fields, with any nesting of fields and other groups inside groups
+        flattened to the top level. (This is for debugging. Note that this makes
+        no sense in combination with indexed mode.)
         """
         extra_args = {}
         total_bytes_read = 0
@@ -534,15 +550,34 @@ class _FieldSet(_Serializable):
             raise
 
     def field_list(self, field_id):
+        """
+        Returns a list of fields with the given id.
+
+        If this field set is indexed and some fields have had their field ids
+        changed, this method may return incorrect results until it is reindexed
+        (by calling make_indexed() again).
+        """
         if self.is_indexed():
             return list(self.fields.get(field_id, ()))
         else:
             return [field for field in self if field.id == field_id]
 
     def value_list(self, field_id):
+        """
+        Returns a list of values from fields with the given id.
+
+        If this field set is indexed and some fields have had their field ids
+        changed, this method may return incorrect results until it is reindexed
+        (by calling make_indexed() again).
+        """
         return [field.value for field in self.field_list(field_id)]
 
     def __getitem__(self, field_id):
+        """
+        Like value_list, but single results are unwrapped from the list for
+        convenience, and lack of results raises a KeyError instead of returning
+        an empty list.
+        """
         result = self.value_list(field_id)
         if not result:
             raise KeyError(f'Field not found: {repr(field_id)}')
@@ -556,6 +591,15 @@ class _FieldSet(_Serializable):
             return result
 
     def __setitem__(self, field_id, value):
+        """
+        Replaces the existing fields with the given id with the single value
+        (or iterable of values) provided.
+
+        If a field or fields of this id already existed, the new fields will be
+        inserted consecutively at the position of the first occurrence of that
+        field id. If no fields with this id previously existed, the new fields
+        will be appended at the end.
+        """
         if isinstance(value, ProtoMessage):
             # If it's a plain message, make a SubMessage
             fields_to_add = (Field(field_id, SubMessage(value.fields)),)
@@ -585,13 +629,14 @@ class _FieldSet(_Serializable):
             self.fields = new_fields
 
     def __delitem__(self, field_id):
+        """Removes all fields with the given id."""
         if self.is_indexed():
             self.fields.pop(field_id, None)
         else:
             self.fields = [field for field in self if field.id != field_id]
 
     def sort(self):
-        """Order the fields in this message by id"""
+        """Order the fields in this message by id."""
         if self.is_indexed():
             self.fields = dict(sorted(self.fields.items()))
         else:
