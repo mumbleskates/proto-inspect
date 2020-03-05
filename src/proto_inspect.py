@@ -1520,6 +1520,15 @@ class PackedRepeated(_ProtoValue):
         if self.values:
             repeated_type = type(self.values[0])
             self.values = list(repeated_type.parse_repeated(value))
+        elif value == b'':
+            self.values = []
+        else:
+            raise TypeError(
+                'The value type of a PackedRepeated cannot be inferred when no '
+                'values already exist. Use '
+                'set_as(value_type.parse_repeated(value)) with the desired '
+                'value type (e.g. Varint, Blob, etc.).'
+            )
 
     def get_as(self, interpretation):
         def emitter():
