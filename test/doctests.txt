@@ -6,20 +6,20 @@ Create a basic message
 >>> m
 ProtoMessage([])
 
-Add a field
+Adding a field is pretty easy:
 
 >>> m.fields.append(Field(5, Varint(55), excess_tag_bytes=1))
 >>> m
 ProtoMessage([Field(5, Varint(55), excess_tag_bytes=1)])
 
-Pretty printing works
+Pretty printing works:
 
 >>> m.pretty_print()
 ProtoMessage([
     Field(5, Varint(55), excess_tag_bytes=1),
 ])
 
-Accessing by index works
+Accessing by index works:
 
 >>> m[5]
 Varint(55)
@@ -28,12 +28,25 @@ Varint(55)
 >>> m[5].signed
 -28
 
-Serializing the message works
+Fields can also be set by index:
+
+>>> m = ProtoMessage()
+>>> m[5] = [Blob(b'hello'), Blob(b'world')]
+>>> m
+ProtoMessage([Field(5, Blob(b'hello')), Field(5, Blob(b'world'))])
+>>> m[5] = Varint(55)
+>>> m
+ProtoMessage([Field(5, Varint(55))])
+>>> m.field_list(5)[0].excess_tag_bytes = 1
+>>> m
+ProtoMessage([Field(5, Varint(55), excess_tag_bytes=1)])
+
+Serializing the message works:
 
 >>> m.serialize().hex()
 'a80037'
 
-Parsing the message back works, too
+Parsing the message back works, too:
 
 >>> def objects_are_same(a, b):
 ...     assert a == b, 'equality'
@@ -46,7 +59,7 @@ Parsing the message back works, too
 >>> objects_are_same(m, reparsed)
 True
 
-Add some extra garbage bytes
+We can add some extra garbage bytes:
 
 >>> m[5].excess_bytes = 2
 >>> m.total_excess_bytes()
@@ -90,7 +103,7 @@ object.
 >>> validate_printing(m)
 True
 
-Strip all the garbage bytes off the message
+Stripping all the garbage bytes off the message is easy:
 
 >>> m.strip_excess_bytes()
 >>> m.pretty_print()
@@ -101,4 +114,3 @@ ProtoMessage([
 '2837'
 >>> validate_printing(m)
 True
->>>
