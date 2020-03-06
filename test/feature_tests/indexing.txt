@@ -1,0 +1,87 @@
+>>> from proto_inspect import *
+>>> m = ProtoMessage([
+...     Field(1, Varint(1)),
+...     Field(1, Varint(11)),
+...     Field(3, Varint(3)),
+...     Field(2, Varint(2)),
+...     Field(1, Varint(111)),
+...     Field(2, Varint(22)),
+... ])
+...
+>>> m.pretty_print()
+ProtoMessage([
+    Field(1, Varint(1)),
+    Field(1, Varint(11)),
+    Field(3, Varint(3)),
+    Field(2, Varint(2)),
+    Field(1, Varint(111)),
+    Field(2, Varint(22)),
+])
+>>> m.make_indexed()
+>>> m
+ProtoMessage({1: [Field(1, Varint(1)), Field(1, Varint(11)), Field(1, Varint(111))], 3: [Field(3, Varint(3))], 2: [Field(2, Varint(2)), Field(2, Varint(22))]})
+>>> m.copy()
+ProtoMessage({1: [Field(1, Varint(1)), Field(1, Varint(11)), Field(1, Varint(111))], 3: [Field(3, Varint(3))], 2: [Field(2, Varint(2)), Field(2, Varint(22))]})
+>>> m.pretty_print()
+ProtoMessage({
+    1: [
+        Field(1, Varint(1)),
+        Field(1, Varint(11)),
+        Field(1, Varint(111)),
+    ],
+    3: [
+        Field(3, Varint(3)),
+    ],
+    2: [
+        Field(2, Varint(2)),
+        Field(2, Varint(22)),
+    ],
+})
+>>> m.sort()
+>>> m.pretty_print()
+ProtoMessage({
+    1: [
+        Field(1, Varint(1)),
+        Field(1, Varint(11)),
+        Field(1, Varint(111)),
+    ],
+    2: [
+        Field(2, Varint(2)),
+        Field(2, Varint(22)),
+    ],
+    3: [
+        Field(3, Varint(3)),
+    ],
+})
+
+Changing field numbers of fields works if you run make_indexed() again.
+
+>>> m.field_list(1)[-1].id = 2
+>>> m.field_list(3)[0].id = 2
+>>> m.make_indexed()
+>>> m.pretty_print()
+ProtoMessage({
+    1: [
+        Field(1, Varint(1)),
+        Field(1, Varint(11)),
+    ],
+    2: [
+        Field(2, Varint(111)),
+        Field(2, Varint(2)),
+        Field(2, Varint(22)),
+        Field(2, Varint(3)),
+    ],
+})
+
+The fields will show up in the order they iterate in.
+
+>>> m.make_flat()
+>>> m.pretty_print()
+ProtoMessage([
+    Field(1, Varint(1)),
+    Field(1, Varint(11)),
+    Field(2, Varint(111)),
+    Field(2, Varint(2)),
+    Field(2, Varint(22)),
+    Field(2, Varint(3)),
+])
