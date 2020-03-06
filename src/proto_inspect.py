@@ -401,6 +401,13 @@ class _FieldSet(_Serializable):
     def _pretty_extra_post(self):
         return ()
 
+    def copy(self):
+        return type(self)(
+            (field.copy() for field in self),
+            indexed=self.is_indexed()
+        )
+    __deepcopy__ = copy
+
     def is_indexed(self):
         return isinstance(self.fields, dict)
 
@@ -600,9 +607,11 @@ class _FieldSet(_Serializable):
         field id. If no fields with this id previously existed, the new fields
         will be appended at the end.
         """
-        if isinstance(value, ProtoMessage):
+        if isinstance(value, _FieldSet):
             # If it's a plain message, make a SubMessage
-            fields_to_add = (Field(field_id, SubMessage(value.fields)),)
+            fields_to_add = [
+                Field(field_id, SubMessage(value, indexed=value.is_indexed()))
+            ]
         elif (  # value is iterable, but not one of the iterable value types
                 isinstance(value, Iterable) and
                 not isinstance(value, (ProtoMessage, PackedRepeated))
@@ -610,6 +619,10 @@ class _FieldSet(_Serializable):
             fields_to_add = [Field(field_id, val) for val in value]
         else:
             fields_to_add = [Field(field_id, value)]
+
+        if not fields_to_add:
+            del self[field_id]
+            return
 
         if self.is_indexed():
             self.fields[field_id] = fields_to_add
@@ -918,6 +931,14 @@ class Field(_Serializable):
             tag_bytes + value_bytes
         )
 
+    def copy(self):
+        return type(self)(
+            self.id,
+            self.value.copy(),
+            excess_tag_bytes=self.excess_tag_bytes
+        )
+    __deepcopy__ = copy
+
     def parse_packed_repeated(self, repeated_value_type):
         """
         Parse the value of this field as a packed repeated field, changing its
@@ -1099,6 +1120,10 @@ class _SingleValue(_ProtoValue, _ParseableValue):
 
     def iter_pretty(self, indent, depth):
         yield repr(self)
+
+    def copy(self):
+        return type(self)(self.value)
+    __deepcopy__ = copy
 
 
 @_register_value_types(
@@ -1432,6 +1457,13 @@ class Blob(_SingleValue):
         else:
             raise ValueError('Not parsing empty field as submessage')
 
+    def copy(self):
+        clone = super().copy()
+        # noinspection PyUnresolvedReferences,PyDunderSlots
+        clone.excess_bytes = self.excess_bytes
+        return clone
+    __deepcopy__ = copy
+
     @property
     def blob(self):
         return self.value
@@ -1551,6 +1583,13 @@ class PackedRepeated(_ProtoValue):
             ),
             excess_bytes=length_bytes - bytes_to_encode_varint(length)
         )
+
+    def copy(self):
+        return type(self)(
+            (value.copy() for value in self),
+            excess_bytes=self.excess_bytes
+        )
+    __deepcopy__ = copy
 
     @property
     def bytes(self):
@@ -1673,6 +1712,13 @@ class SubMessage(ProtoMessage, _ProtoValue, _ParseableValue):
     def parse_submessage(self, *, parse_empty=False):
         return self
 
+    def copy(self):
+        clone = super().copy()
+        # noinspection PyUnresolvedReferences,PyDunderSlots
+        clone.excess_bytes = self.excess_bytes
+        return clone
+    __deepcopy__ = copy
+
     @property
     def bytes(self):
         return b''.join(super().iter_serialize())
@@ -1704,6 +1750,10 @@ class _TagOnlyValue(_ProtoValue):
     @classmethod
     def parse(cls, _data, *, offset=0, field_id=None):
         return cls(), 0
+
+    def copy(self):
+        return type(self)()  # There is no state in tag only values.
+    __deepcopy__ = copy
 
     def is_default(self):
         return False
@@ -1748,6 +1798,13 @@ class Group(_FieldSet, _ProtoValue):
     def _pretty_extra_post(self):
         if self.excess_end_tag_bytes:
             yield f', excess_end_tag_bytes={repr(self.excess_end_tag_bytes)}'
+
+    def copy(self):
+        clone = super().copy()
+        # noinspection PyUnresolvedReferences,PyDunderSlots
+        clone.excess_end_tag_bytes = self.excess_end_tag_bytes
+        return clone
+    __deepcopy__ = copy
 
     def parse_submessage(self, *, parse_empty=False):
         raise TypeError('Groups cannot be parsed further')
