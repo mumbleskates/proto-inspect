@@ -1,0 +1,5 @@
+>>> from proto_inspect import *
+>>> ProtoMessage()
+ProtoMessage([])
+>>> ProtoMessage().pretty_print()
+ProtoMessage([])
