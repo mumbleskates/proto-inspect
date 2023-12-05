@@ -1207,18 +1207,20 @@ class Varint(_SingleValue):
 
     @property
     def int32(self):
-        if self.value not in UNSIGNED_32_BIT_RANGE:
+        if self.value not in UNSIGNED_64_BIT_RANGE:
             raise ValueError('Varint out of range for int32')
-        if self.value & 0x8000_0000:
-            return self.value - 0x1_0000_0000
-        else:
-            return self.value
+        n = self.value
+        if n & 0x8000_0000_0000_0000:
+            n = n - 0x1_0000_0000_0000_0000
+        if n not in SIGNED_32_BIT_RANGE:
+            raise ValueError('Varint out of range for int32')
+        return n
 
     @int32.setter
     def int32(self, value):
         if value not in SIGNED_32_BIT_RANGE:
             raise ValueError('Value out of range for int32')
-        self.value = value & 0xffff_ffff
+        self.value = value & 0xffff_ffff_ffff_ffff
 
     @property
     def sint32(self):

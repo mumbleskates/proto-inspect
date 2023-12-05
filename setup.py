@@ -5,7 +5,7 @@ setup(
     name='proto-inspect',
     description='protobuf parsing, modification, '
                 'and reassembly for the repl',
-    version='0.2',
+    version='0.3',
     author='Kent Ross',
     author_email='k@mad.cash',
     url='https://github.com/mumbleskates/proto-inspect',
@@ -13,7 +13,6 @@ setup(
     classifiers=[
         'Development Status :: 4 - Beta',
         'Programming Language :: Python :: 3 :: Only',
-        'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
